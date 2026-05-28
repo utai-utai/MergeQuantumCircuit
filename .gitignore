@@ -1,1 +1,4 @@
-.idea/
+data
+.idea
+.venv
+MergeQuantumCircuit.egg-info

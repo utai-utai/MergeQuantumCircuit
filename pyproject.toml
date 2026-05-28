@@ -1,0 +1,12 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "MergeQuantumCircuit"
+version = "0.1.0"
+description = "Quantum circuit merging project"
+dependencies = [
+    "matplotlib>=3.8",
+    "pennylane>=0.35"
+]

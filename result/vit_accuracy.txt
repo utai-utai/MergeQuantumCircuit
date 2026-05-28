@@ -1,0 +1,6 @@
+=== Experiment I: ViT Epoch-by-Epoch ===
+Epoch 01/05 | Loss: 0.6367 | [Classical] Acc: 92.27% | [Quantum k=32] Acc: 88.87%
+Epoch 02/05 | Loss: 0.2285 | [Classical] Acc: 94.05% | [Quantum k=32] Acc: 88.87%
+Epoch 03/05 | Loss: 0.1790 | [Classical] Acc: 95.23% | [Quantum k=32] Acc: 89.37%
+Epoch 04/05 | Loss: 0.1542 | [Classical] Acc: 95.65% | [Quantum k=32] Acc: 88.16%
+Epoch 05/05 | Loss: 0.1358 | [Classical] Acc: 96.06% | [Quantum k=32] Acc: 88.27%
