@@ -1,6 +1,7 @@
-=== Experiment I: ViT Epoch-by-Epoch ===
-Epoch 01/05 | Loss: 0.6367 | [Classical] Acc: 92.27% | [Quantum k=32] Acc: 88.87%
-Epoch 02/05 | Loss: 0.2285 | [Classical] Acc: 94.05% | [Quantum k=32] Acc: 88.87%
-Epoch 03/05 | Loss: 0.1790 | [Classical] Acc: 95.23% | [Quantum k=32] Acc: 89.37%
-Epoch 04/05 | Loss: 0.1542 | [Classical] Acc: 95.65% | [Quantum k=32] Acc: 88.16%
-Epoch 05/05 | Loss: 0.1358 | [Classical] Acc: 96.06% | [Quantum k=32] Acc: 88.27%
+=== Experiment I: ViT zero-shot quantum transfer ===
+dim=64  k=16  qubits=4
+Epoch 01/5 | loss 0.6178 | [classical] 91.11% | [quantum k=16] 89.91% | gap +1.20
+Epoch 02/5 | loss 0.2503 | [classical] 93.43% | [quantum k=16] 92.12% | gap +1.31
+Epoch 03/5 | loss 0.1852 | [classical] 93.98% | [quantum k=16] 92.77% | gap +1.21
+Epoch 04/5 | loss 0.1608 | [classical] 95.42% | [quantum k=16] 93.74% | gap +1.68
+Epoch 05/5 | loss 0.1411 | [classical] 95.91% | [quantum k=16] 94.25% | gap +1.66

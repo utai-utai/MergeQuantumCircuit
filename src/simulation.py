@@ -1,81 +1,58 @@
+"""
+METHOD showcase (docs/THEORY.md) — runnable demonstration of the corrected
+classical->quantum transfer map and manifold merging on MNIST.
+
+Three demonstrations, all writing artefacts to ../result:
+
+  Experiment A — Zero-shot quantum transfer
+      Train a classical residual core, replace it by the subspace mixing
+      operator O(Q,H)=Q e^{-iH} Q^H (zero training on the quantum side),
+      compare accuracy.  A PennyLane circuit is drawn and cross-checked
+      against the matrix operator to confirm physical executability.
+
+  Experiment B — Error decomposition vs rank k  (the central Method figure)
+      ||W - O||_F  <=  ||W - Pi_Q(W)||_F (truncation)  +  ||P_A - I||_F (non-unitarity).
+      Plots all three curves; at full rank the total collapses onto the
+      non-unitarity floor (Theorem 4.2), and the non-unitarity is exactly
+      sqrt(sum (sigma_j(A)-1)^2).
+
+  Experiment C — Manifold merging
+      Merge two specialised cores in the Lie algebra over the covering frame
+      Q_C = orth([Q_A,Q_B]); compare classical averaging vs quantum merge.
+"""
+
 import os
+import math
+import copy
+import time
+
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from torchvision import datasets, transforms
 from torch.utils.data import DataLoader, Subset
-import numpy as np
+from torchvision import datasets, transforms
 import matplotlib.pyplot as plt
-import time
-import math
 import pennylane as qml
 
-# 🚀 自动创建 result 文件夹用于保存论文图表
-os.makedirs('../result', exist_ok=True)
+from src.geometric_qml import (
+    transfer_map, mixing_operator, error_decomposition,
+    merge_generators,
+)
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-print(f"🚀 Using Device: {DEVICE}")
 
-# ==========================================
-# 0. 物理量子电路工厂 (Quantum Hardware Factory)
-# ==========================================
-_qnodes = {}
-
-
-def get_qnode(k, device_name="default.qubit"):
-    """
-    根据子空间截断秩 k，动态分配对应的量子比特数。
-    例如 k=16，物理上只需要 log2(16) = 4 个量子比特！
-    """
-    if k not in _qnodes:
-        num_qubits = int(math.log2(k))
-        dev = qml.device(device_name, wires=num_qubits)
-
-        @qml.qnode(dev, interface="torch")
-        def stiefel_quantum_circuit(state, U_matrix):
-            # Step 1: 振幅编码 (Amplitude Encoding)
-            qml.StatePrep(state, wires=range(num_qubits))
-
-            # Step 2: 酉演化 (Unitary Synthesis)
-            qml.QubitUnitary(U_matrix, wires=range(num_qubits))
-
-            # Step 3: 态读出 (State Readout)
-            return qml.state()
-
-        _qnodes[k] = stiefel_quantum_circuit
-    return _qnodes[k]
+_HERE = os.path.dirname(os.path.abspath(__file__))
+RESULT_DIR = os.path.join(_HERE, "..", "result")
+DATA_DIR = os.path.join(_HERE, "..", "data")
+os.makedirs(RESULT_DIR, exist_ok=True)
 
 
-# ==========================================
-# 1. 纯几何理论引擎 (Geometric QML Engine)
-# ==========================================
-class GeometricQMLEngine:
-    @staticmethod
-    def extract_transfer_map(W, k):
-        W_complex = W.to(torch.complex64)
-        U, S, Vh = torch.linalg.svd(W_complex, full_matrices=False)
-        Q = U[:, :k]
-        A = Q.mH @ W_complex @ Q
-        H = (A + A.mH) / 2.0
-        return Q, H
-
-    @staticmethod
-    def connection_induced_transport(Q_A, H_A, Q_B, H_B, Q_C):
-        """定理 3：基于正规联络的流形平行传输 (Lift-Project-Restrict)
-           完美免疫 SVD 的相位规范模糊性，且保持物理量子比特数不变。"""
-        # 1. 提升 (Lift)：Q_A @ H_A @ Q_A.mH 形成全局无歧义的哈密顿量
-        # 2. 投影与限制 (Project & Restrict)：两侧乘 Q_C 投影到公共子空间
-        H_A_prime = Q_C.mH @ (Q_A @ H_A @ Q_A.mH) @ Q_C
-        H_B_prime = Q_C.mH @ (Q_B @ H_B @ Q_B.mH) @ Q_C
-        return H_A_prime, H_B_prime
-
-
-# ==========================================
-# 2. 经典模型 (Classical ResNet)
-# ==========================================
+# ==========================================================================
+# 1. Classical model: residual near-identity core (keeps assumption (NU))
+# ==========================================================================
 class ClassicalResNet(nn.Module):
     def __init__(self, hidden_dim=64):
-        super(ClassicalResNet, self).__init__()
+        super().__init__()
         self.flatten = nn.Flatten()
         self.fc_in = nn.Linear(28 * 28, hidden_dim)
         self.core_layer = nn.Linear(hidden_dim, hidden_dim, bias=False)
@@ -88,226 +65,241 @@ class ClassicalResNet(nn.Module):
     def forward(self, x):
         x = self.flatten(x)
         x = self.relu(self.fc_in(x))
-        x = x + self.core_layer(x)
+        x = x + self.core_layer(x)          # residual near-identity block:  (I + W)
         x = self.relu(x)
-        x = self.fc_out(x)
-        return x
+        return self.fc_out(x)
 
 
-# ==========================================
-# 3. 升级版：真·量子混合网络 (Physical Edition)
-# ==========================================
 class QuantumHybridNet(nn.Module):
-    def __init__(self, classical_model, Q, H):
-        super(QuantumHybridNet, self).__init__()
+    """Classical model with the residual core replaced by the mixing operator
+    O = Q U Q^H (U = e^{-iH}).  Applying O as a matrix is mathematically
+    identical to the StatePrep + QubitUnitary circuit (verified in
+    `crosscheck_against_circuit`)."""
+
+    def __init__(self, classical_model, Q, U):
+        super().__init__()
         self.flatten = classical_model.flatten
         self.fc_in = classical_model.fc_in
         self.fc_out = classical_model.fc_out
         self.relu = classical_model.relu
-
-        self.register_buffer('Q', Q)
-        self.register_buffer('H', H)
-
-        U_matrix = torch.linalg.matrix_exp(-1j * H)
-        self.register_buffer('U_circuit', torch.conj(U_matrix))
-
+        O = mixing_operator(Q, U)                      # (n, n) complex
+        self.register_buffer("O_T", O.T.contiguous())  # apply as x @ O^T
         self.k = Q.shape[1]
-        self.qnode = get_qnode(self.k)
 
     def forward(self, x):
         x = self.flatten(x)
         x = self.relu(self.fc_in(x))
-
-        x_complex = x.to(torch.complex64)
-        x_subspace = x_complex @ self.Q
-
-        batch_size = x_subspace.shape[0]
-        quantum_outputs = []
-
-        norms = torch.linalg.norm(x_subspace, dim=1, keepdim=True) + 1e-12
-        normalized_states = x_subspace / norms
-
-        for i in range(batch_size):
-            state_in = normalized_states[i]
-            quantum_out = self.qnode(state_in, self.U_circuit)
-            quantum_outputs.append(quantum_out)
-
-        x_evolved = torch.stack(quantum_outputs).to(x.device)
-        x_evolved = x_evolved * norms
-
-        x_quantum_core = (x_evolved @ self.Q.mH).real
-
-        x = x + x_quantum_core
+        x_q = (x.to(torch.complex64) @ self.O_T).real  # O acting on x
+        x = x + x_q
         x = self.relu(x)
-        x = self.fc_out(x)
-        return x
+        return self.fc_out(x)
 
 
-# ==========================================
-# 4. 数据与训练辅助函数
-# ==========================================
+# ==========================================================================
+# 2. Data / train / eval
+# ==========================================================================
 def get_dataloaders():
-    transform = transforms.Compose([transforms.ToTensor(), transforms.Normalize((0.5,), (0.5,))])
-    full_train = datasets.MNIST('../data', train=True, download=True, transform=transform)
-    test_loader = DataLoader(datasets.MNIST('../data', train=False, transform=transform), batch_size=1000, shuffle=False)
-    idx_0_4 = [i for i, (_, label) in enumerate(full_train) if label <= 4]
-    idx_5_9 = [i for i, (_, label) in enumerate(full_train) if label >= 5]
-    train_loader_all = DataLoader(full_train, batch_size=256, shuffle=True)
-    train_loader_0_4 = DataLoader(Subset(full_train, idx_0_4), batch_size=256, shuffle=True)
-    train_loader_5_9 = DataLoader(Subset(full_train, idx_5_9), batch_size=256, shuffle=True)
-    return train_loader_all, train_loader_0_4, train_loader_5_9, test_loader
+    tf = transforms.Compose([transforms.ToTensor(), transforms.Normalize((0.5,), (0.5,))])
+    full_train = datasets.MNIST(DATA_DIR, train=True, download=True, transform=tf)
+    test = datasets.MNIST(DATA_DIR, train=False, download=True, transform=tf)
+    targets = full_train.targets
+    idx_0_4 = (targets <= 4).nonzero(as_tuple=True)[0]
+    idx_5_9 = (targets >= 5).nonzero(as_tuple=True)[0]
+    return (
+        DataLoader(full_train, batch_size=256, shuffle=True),
+        DataLoader(Subset(full_train, idx_0_4), batch_size=256, shuffle=True),
+        DataLoader(Subset(full_train, idx_5_9), batch_size=256, shuffle=True),
+        DataLoader(test, batch_size=1000, shuffle=False),
+    )
 
 
-def train_model(model, train_loader, epochs=3, freeze_surrounding=False):
+def train_model(model, loader, epochs=3, freeze_surrounding=False, identity_reg=1e-3):
     model.to(DEVICE)
     if freeze_surrounding:
-        for name, param in model.named_parameters():
-            if 'core_layer' not in name:
-                param.requires_grad = False
-    optimizer = optim.Adam(filter(lambda p: p.requires_grad, model.parameters()), lr=0.001)
-    criterion = nn.CrossEntropyLoss()
+        for name, p in model.named_parameters():
+            if "core_layer" not in name:
+                p.requires_grad = False
+    opt = optim.Adam(filter(lambda p: p.requires_grad, model.parameters()), lr=1e-3)
+    crit = nn.CrossEntropyLoss()
     model.train()
-    for ep in range(epochs):
-        for data, target in train_loader:
+    for _ in range(epochs):
+        for data, target in loader:
             data, target = data.to(DEVICE), target.to(DEVICE)
-            optimizer.zero_grad()
-            loss = criterion(model(data), target)
+            opt.zero_grad()
+            loss = crit(model(data), target)
+            if identity_reg:                          # soft anchor: keep W near-unitary (NU)
+                W = model.core_layer.weight
+                loss = loss + identity_reg * torch.nn.functional.mse_loss(
+                    W, torch.eye(W.shape[0], device=W.device))
             loss.backward()
-            optimizer.step()
+            opt.step()
     return model
 
 
-def evaluate(model, test_loader):
+@torch.no_grad()
+def evaluate(model, loader):
     model.eval()
-    correct = 0
-    total = 0
-    with torch.no_grad():
-        for data, target in test_loader:
-            data, target = data.to(DEVICE), target.to(DEVICE)
-            pred = model(data).argmax(dim=1, keepdim=True)
-            correct += pred.eq(target.view_as(pred)).sum().item()
-            total += target.size(0)
-    return 100. * correct / total
+    correct = total = 0
+    for data, target in loader:
+        data, target = data.to(DEVICE), target.to(DEVICE)
+        pred = model(data).argmax(dim=1)
+        correct += (pred == target).sum().item()
+        total += target.size(0)
+    return 100.0 * correct / total
 
 
-# ==========================================
-# 实验执行模块 (全量测试版)
-# ==========================================
+# ==========================================================================
+# 3. PennyLane cross-check: the matrix operator == the physical circuit
+# ==========================================================================
+def make_qnode(k):
+    num_qubits = int(math.log2(k))
+    dev = qml.device("default.qubit", wires=num_qubits)
+
+    @qml.qnode(dev, interface="torch")
+    def circuit(state, U):
+        qml.StatePrep(state, wires=range(num_qubits))
+        qml.QubitUnitary(U, wires=range(num_qubits))
+        return qml.state()
+
+    return circuit, num_qubits
+
+
+def crosscheck_against_circuit(Q, U_A, k):
+    """Confirm O = Q U_A Q^H reproduces the StatePrep+QubitUnitary circuit, and
+    save the compiled circuit diagram for the Method figure."""
+    circuit, num_qubits = make_qnode(k)
+    torch.manual_seed(0)
+    x_sub = torch.nn.functional.normalize(torch.rand(k, dtype=torch.complex64), dim=0)
+    circ_out = circuit(x_sub, U_A.cpu())               # physical evolution in subspace
+    mat_out = x_sub @ U_A.cpu().T                      # matrix evolution  U_A x  (row form)
+    max_dev = torch.max(torch.abs(circ_out - mat_out)).item()
+    diagram = qml.draw(circuit)(x_sub, U_A.cpu())
+    with open(os.path.join(RESULT_DIR, "sim_circuit.txt"), "w", encoding="utf-8") as f:
+        f.write(f"Compiled subspace unitary on {num_qubits} qubits (k={k}):\n\n")
+        f.write(diagram + "\n\n")
+        f.write(f"max |circuit - matrix| = {max_dev:.2e}  "
+                f"(matrix operator O = Q U_A Q^H reproduces the physical circuit)\n")
+    return max_dev, diagram
+
+
+# ==========================================================================
+# Experiment A — zero-shot quantum transfer
+# ==========================================================================
 def experiment_A(train_loader, test_loader, hidden_dim=64, k=16):
-    print("\n" + "=" * 50)
-    print(f"📊 Experiment A: Physical Quantum Transfer (k={k}, Full Test Set)")
-
-    model = ClassicalResNet(hidden_dim=hidden_dim)
-    # 训练 3 个 Epoch，给论文提供一个扎实的 95%+ Baseline
+    print("\n" + "=" * 60 + "\nExperiment A: Zero-shot quantum transfer (k=%d)" % k)
+    model = ClassicalResNet(hidden_dim).to(DEVICE)
     model = train_model(model, train_loader, epochs=3)
     acc_c = evaluate(model, test_loader)
 
-    W_trained = model.core_layer.weight.data.clone().cpu()
-    Q, H = GeometricQMLEngine.extract_transfer_map(W_trained, k)
+    W = model.core_layer.weight.data.clone().cpu()
+    Q, U_A, H = transfer_map(W, k)
 
-    q_model = QuantumHybridNet(model, Q.to(DEVICE), H.to(DEVICE)).to(DEVICE)
+    max_dev, diagram = crosscheck_against_circuit(Q, U_A, k)
+    print("[Circuit] compiled on %d qubits; max|circuit-matrix| = %.2e "
+          "(diagram saved to result/sim_circuit.txt)" % (int(math.log2(k)), max_dev))
 
-    print("\n[Circuit Compilation] 物理设备上的 4 Qubits 编译结构：")
-    dummy_state = torch.nn.functional.normalize(torch.rand(k, dtype=torch.complex64), p=2, dim=0)
-    print(qml.draw(q_model.qnode)(dummy_state, q_model.U_circuit))
-    print("-" * 50)
-
-    # 运行完整的 10000 张测试集图片
-    print(
-        f"Running Quantum Simulator on all {len(test_loader.dataset)} test samples... (This may take a minute on GPU)")
+    q_model = QuantumHybridNet(model, Q.to(DEVICE), U_A.to(DEVICE)).to(DEVICE)
     acc_q = evaluate(q_model, test_loader)
 
-    print(f"[Classical Baseline] Accuracy: {acc_c:.2f}%")
-    print(f"[True Quantum Simulator] Accuracy: {acc_q:.2f}%")
-    return W_trained
+    tot, tr, nu = error_decomposition(W, k)
+    lines = [
+        "=== Experiment A: Zero-shot quantum transfer ===",
+        f"hidden_dim={hidden_dim}  k={k}  qubits={int(math.log2(k))}",
+        f"[Classical baseline]        Accuracy: {acc_c:.2f}%",
+        f"[Quantum zero-shot O(Q,H)]  Accuracy: {acc_q:.2f}%",
+        f"transfer error ||W-O||_F={tot:.4f}  (truncation={tr:.4f}, non-unitarity={nu:.4f})",
+        f"circuit/matrix agreement: max deviation = {max_dev:.2e}",
+    ]
+    with open(os.path.join(RESULT_DIR, "sim_expA_accuracy.txt"), "w", encoding="utf-8") as f:
+        f.write("\n".join(lines) + "\n")
+    print("\n".join(lines[2:]))
+    return W
 
 
-def experiment_B(W_trained, hidden_dim=64):
-    print("\n" + "=" * 50)
-    print("📈 Experiment B: Error Scaling vs. Subspace Rank k")
-    k_list = [2, 4, 8, 16, 32, 64]
-    errors = []
-    W_complex = W_trained.to(torch.complex64)
+# ==========================================================================
+# Experiment B — error decomposition vs rank k  (central Method figure)
+# ==========================================================================
+def experiment_B(W, k_list=(2, 4, 8, 16, 32, 64)):
+    print("\n" + "=" * 60 + "\nExperiment B: Error decomposition vs rank k")
+    k_list = [k for k in k_list if k <= W.shape[0]]
+    totals, truncs, nonunits = [], [], []
+    lines = ["=== Experiment B: Error decomposition vs rank k ===",
+             f"{'k':>4} {'total':>10} {'truncation':>12} {'non-unitarity':>14} {'bound(tr+nu)':>14}"]
     for k in k_list:
-        Q, H = GeometricQMLEngine.extract_transfer_map(W_trained, k)
-        U = torch.linalg.matrix_exp(-1j * H)
-        O_matrix = Q @ U @ Q.mH
-        err = torch.norm(W_complex - O_matrix, p='fro').item()
-        errors.append(err)
-        print(f"Rank k={k:<2d} | Frobenius Error ||W - O(Q,H)||_F = {err:.4f}")
+        tot, tr, nu = error_decomposition(W, k)
+        totals.append(tot); truncs.append(tr); nonunits.append(nu)
+        line = f"{k:>4} {tot:>10.4f} {tr:>12.4f} {nu:>14.4f} {tr + nu:>14.4f}"
+        lines.append(line); print("  " + line)
 
-    # 🌟 生成用于发表的高清图表并保存到 result 文件夹
-    plt.figure(figsize=(8, 5))
-    plt.plot(k_list, errors, marker='s', markersize=8, linewidth=2.5, color='#B22222')
-    plt.title("Approximation Error vs. Subspace Dimension ($k$)", fontsize=16, pad=15)
-    plt.xlabel(r"Truncation Rank $k$ (Log Scale 2^n)", fontsize=14)
-    plt.ylabel(r"Frobenius Error $||W - \mathcal{O}(Q,H)||_F$", fontsize=14)
-
-    # 增加网格和对数刻度以增加科研感
-    plt.xscale('log', base=2)
-    plt.xticks(k_list, labels=[str(k) for k in k_list])
-    plt.grid(True, which="both", ls="--", alpha=0.6)
-
-    # 标注出相位隆起区域
-    plt.annotate('Phase Penalty\n(Non-unitary mismatch)',
-                 xy=(8, max(errors)), xytext=(8, max(errors) + 0.05),
-                 arrowprops=dict(facecolor='black', shrink=0.05, width=1.5, headwidth=6),
-                 fontsize=12, ha='center')
-
+    plt.figure(figsize=(8, 5.2))
+    plt.plot(k_list, totals,   "o-", lw=2.4, ms=7, color="#1f3b73", label=r"total  $\|W-\mathcal{O}\|_F$")
+    plt.plot(k_list, truncs,   "s--", lw=2.0, ms=6, color="#2a8c4a", label=r"truncation  $\|W-\Pi_Q(W)\|_F$")
+    plt.plot(k_list, nonunits, "^--", lw=2.0, ms=6, color="#b22222", label=r"non-unitarity  $\|P_A-I\|_F$")
+    plt.xscale("log", base=2)
+    plt.xticks(k_list, [str(k) for k in k_list])
+    plt.xlabel(r"Truncation rank $k$  ($\log_2 k$ qubits)", fontsize=13)
+    plt.ylabel("Frobenius error", fontsize=13)
+    plt.title("Quantization error decomposition (Theorem 4.2)", fontsize=14, pad=10)
+    plt.grid(True, which="both", ls="--", alpha=0.5)
+    plt.legend(fontsize=11, framealpha=0.95)
+    plt.annotate("full rank: truncation $\\to$ 0,\ntotal $=$ non-unitarity floor",
+                 xy=(k_list[-1], totals[-1]),
+                 xytext=(k_list[len(k_list) // 2], max(totals) * 0.62),
+                 arrowprops=dict(arrowstyle="->", lw=1.3), fontsize=10, ha="center")
     plt.tight_layout()
-    save_path = os.path.join('../result', 'experiment_B_scaling.png')
-    plt.savefig(save_path, dpi=300, bbox_inches='tight')
+    fig_path = os.path.join(RESULT_DIR, "sim_expB_error_decomposition.png")
+    plt.savefig(fig_path, dpi=300, bbox_inches="tight")
     plt.close()
-    print(f"✅ Figure saved successfully to: {save_path}")
+    with open(os.path.join(RESULT_DIR, "sim_expB_error_decomposition.txt"), "w", encoding="utf-8") as f:
+        f.write("\n".join(lines) + "\n")
+    print("  saved figure ->", os.path.relpath(fig_path))
 
 
-def experiment_C(train_loader_all, train_loader_0_4, train_loader_5_9, test_loader, hidden_dim=64, k=16):
-    print("\n" + "=" * 50)
-    print(f"🔗 Experiment C: Quantum Manifold Merging (k={k}, Full Test Set)")
+# ==========================================================================
+# Experiment C — manifold merging
+# ==========================================================================
+def experiment_C(train_all, train_0_4, train_5_9, test_loader, hidden_dim=64, k=16):
+    print("\n" + "=" * 60 + "\nExperiment C: Manifold merging (k=%d)" % k)
+    base = ClassicalResNet(hidden_dim).to(DEVICE)
+    base = train_model(base, train_all, epochs=3)
 
-    base_model = ClassicalResNet(hidden_dim=hidden_dim)
-    base_model = train_model(base_model, train_loader_all, epochs=3)
-
-    import copy
-    model_A = copy.deepcopy(base_model)
-    model_B = copy.deepcopy(base_model)
-    model_A = train_model(model_A, train_loader_0_4, epochs=1, freeze_surrounding=True)
-    model_B = train_model(model_B, train_loader_5_9, epochs=1, freeze_surrounding=True)
-
+    model_A = train_model(copy.deepcopy(base), train_0_4, epochs=1, freeze_surrounding=True)
+    model_B = train_model(copy.deepcopy(base), train_5_9, epochs=1, freeze_surrounding=True)
     W_A = model_A.core_layer.weight.data.clone().cpu()
     W_B = model_B.core_layer.weight.data.clone().cpu()
 
-    model_C_classic = copy.deepcopy(base_model)
-    W_C_target = 0.5 * W_A + 0.5 * W_B
-    model_C_classic.core_layer.weight.data = W_C_target.to(DEVICE)
-    acc_classic_merge = evaluate(model_C_classic, test_loader)
+    # classical direct averaging
+    model_C = copy.deepcopy(base)
+    W_C = 0.5 * W_A + 0.5 * W_B
+    model_C.core_layer.weight.data = W_C.to(DEVICE)
+    acc_classic = evaluate(model_C, test_loader)
 
-    # 🌟 修复核心：提取目标流形的公共覆盖标架 Q_C (严格保持 k 维)
-    Q_C, _ = GeometricQMLEngine.extract_transfer_map(W_C_target, k)
+    # quantum manifold merge on the covering frame Q_C = orth([Q_A, Q_B])
+    Q_C, H_C, U_C = merge_generators(W_A, W_B, k)
+    q_merged = QuantumHybridNet(base, Q_C.to(DEVICE), U_C.to(DEVICE)).to(DEVICE)
+    acc_quantum = evaluate(q_merged, test_loader)
 
-    Q_A, H_A = GeometricQMLEngine.extract_transfer_map(W_A, k)
-    Q_B, H_B = GeometricQMLEngine.extract_transfer_map(W_B, k)
-
-    # 🌟 修复核心：使用基于 Q_C 的严格正规联络传输
-    H_A_prime, H_B_prime = GeometricQMLEngine.connection_induced_transport(Q_A, H_A, Q_B, H_B, Q_C)
-
-    # 在李代数切空间内完成量子合并
-    H_C_merge = 0.5 * H_A_prime + 0.5 * H_B_prime
-    quantum_merged_model = QuantumHybridNet(base_model, Q_C.to(DEVICE), H_C_merge.to(DEVICE)).to(DEVICE)
-
-    print(f"Running Quantum Merging Simulator on all {len(test_loader.dataset)} test samples...")
-    acc_quantum_merge = evaluate(quantum_merged_model, test_loader)
-
-    print(f"[Classical Direct Averaging] Accuracy: {acc_classic_merge:.2f}%")
-    print(f"[True Quantum Simulator]     Accuracy: {acc_quantum_merge:.2f}%")
+    lines = [
+        "=== Experiment C: Manifold merging ===",
+        f"k={k}  covering frame dim k_C={Q_C.shape[1]} (<= 2k)",
+        f"[Classical direct averaging] Accuracy: {acc_classic:.2f}%",
+        f"[Quantum manifold merge]     Accuracy: {acc_quantum:.2f}%",
+        f"generator separation ||H_A'-H_B'||_F drives the O(.^2) merge penalty.",
+    ]
+    with open(os.path.join(RESULT_DIR, "sim_expC_merge.txt"), "w", encoding="utf-8") as f:
+        f.write("\n".join(lines) + "\n")
+    print("\n".join(lines[2:]))
 
 
-# if __name__ == "__main__":
-#     t0 = time.time()
-#     train_all, train_0_4, train_5_9, test = get_dataloaders()
-#
-#     W_trained = experiment_A(train_all, test, hidden_dim=64, k=16)
-#     experiment_B(W_trained, hidden_dim=64)
-#     experiment_C(train_all, train_0_4, train_5_9, test, hidden_dim=64, k=16)
-#
-#     print(f"\n✅ All Physical Experiments Completed in {time.time() - t0:.2f} seconds.")
+def main():
+    t0 = time.time()
+    torch.manual_seed(0)
+    train_all, train_0_4, train_5_9, test = get_dataloaders()
+    W = experiment_A(train_all, test, hidden_dim=64, k=16)
+    experiment_B(W)
+    experiment_C(train_all, train_0_4, train_5_9, test, hidden_dim=64, k=16)
+    print(f"\nAll METHOD demonstrations finished in {time.time() - t0:.1f}s. Artefacts in result/.")
+
+
+if __name__ == "__main__":
+    main()

@@ -2,3 +2,11 @@ data
 .idea
 .venv
 MergeQuantumCircuit.egg-info
+paper_build
+*.png
+*.log
+*.json
+*.tex
+*.bib
+*.txt
+*.env

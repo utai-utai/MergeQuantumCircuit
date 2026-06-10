@@ -1,30 +1,40 @@
+"""
+EXPERIMENT I (ViT) — zero-shot quantum transfer of the residual core inside a
+Vision Transformer block, evaluated epoch-by-epoch on MNIST.
+
+At every epoch the classical core is analytically replaced (no quantum-side
+training) by the mixing operator O(Q,H)=Q e^{-iH} Q^H using the corrected
+transfer map in src.geometric_qml, and the resulting hybrid model is evaluated.
+Artefacts are written to ./result.
+"""
+
+import os
+import time
+
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from torchvision import datasets, transforms
 from torch.utils.data import DataLoader
-import time
-import os
+from torchvision import datasets, transforms
+import matplotlib.pyplot as plt
+
+from src.geometric_qml import transfer_map, mixing_operator
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-print(f"🚀 Using Device: {DEVICE}")
+print(f"Using Device: {DEVICE}")
+
+_HERE = os.path.dirname(os.path.abspath(__file__))
+RESULT_DIR = os.path.join(_HERE, "result")
+DATA_DIR = os.path.join(_HERE, "data")
+os.makedirs(RESULT_DIR, exist_ok=True)
 
 
-# ==========================================
-# 1. 几何引擎与量子核心层
-# ==========================================
-class GeometricQMLEngine:
-    @staticmethod
-    def extract_transfer_map(W, k):
-        W_complex = W.to(torch.complex64)
-        U, S, Vh = torch.linalg.svd(W_complex, full_matrices=False)
-        Q = U[:, :k]
-        A = Q.mH @ W_complex @ Q
-        H = (A + A.mH) / 2.0
-        return Q, H
-
-
+# ==========================================================================
+# 1. Classical residual core + zero-shot quantum replacement
+# ==========================================================================
 class ClassicalResLinear(nn.Module):
+    """Residual near-identity core:  x -> x + x W^T,  W = I + small noise."""
+
     def __init__(self, dim):
         super().__init__()
         self.weight = nn.Parameter(torch.eye(dim))
@@ -36,26 +46,23 @@ class ClassicalResLinear(nn.Module):
 
 
 class QuantumResLinearZeroShot(nn.Module):
+    """Replace the W-action by the mixing operator O = Q U_A Q^H (zero-shot)."""
+
     def __init__(self, classical_layer, k):
         super().__init__()
         W = classical_layer.weight.data.clone().cpu()
-        Q, H = GeometricQMLEngine.extract_transfer_map(W, k)
-        self.register_buffer('Q', Q.to(DEVICE))
-        self.register_buffer('H', H.to(DEVICE))
-        U = torch.linalg.matrix_exp(-1j * self.H)
-        self.register_buffer('U_mH', U.mH)
+        Q, U_A, _ = transfer_map(W, k)
+        O = mixing_operator(Q.to(DEVICE), U_A.to(DEVICE))
+        self.register_buffer("O_T", O.T.contiguous())
 
     def forward(self, x):
-        x_c = x.to(torch.complex64)
-        x_sub = torch.matmul(x_c, self.Q)
-        x_ev = torch.matmul(x_sub, self.U_mH)
-        x_q = torch.matmul(x_ev, self.Q.mH).real
+        x_q = (x.to(torch.complex64) @ self.O_T).real
         return x + x_q
 
 
-# ==========================================
-# 2. MiniViT 架构
-# ==========================================
+# ==========================================================================
+# 2. MiniViT
+# ==========================================================================
 class MiniViTBlock(nn.Module):
     def __init__(self, dim, heads):
         super().__init__()
@@ -92,78 +99,81 @@ class MiniViT(nn.Module):
         return self.head(x[:, 0])
 
 
-def run_vit_experiment():
-    print("\n" + "=" * 50)
-    print(f"👁️ Experiment I: ViT Zero-Shot Classification")
+def run_vit_experiment(dim=64, k=16, epochs=5):
+    print("\n" + "=" * 60 + "\nExperiment I: ViT zero-shot quantum transfer")
 
-    dim = 64
-    k = 16
-    epochs = 5
-
-    os.makedirs('./data', exist_ok=True)
-    os.makedirs('./result', exist_ok=True)
-    transform = transforms.Compose([transforms.ToTensor(), transforms.Normalize((0.5,), (0.5,))])
-    full_train = datasets.MNIST('./data', train=True, download=True, transform=transform)
-    test = datasets.MNIST('./data', train=False, transform=transform)
-    train_loader = DataLoader(full_train, batch_size=128, shuffle=True)
+    tf = transforms.Compose([transforms.ToTensor(), transforms.Normalize((0.5,), (0.5,))])
+    train = datasets.MNIST(DATA_DIR, train=True, download=True, transform=tf)
+    test = datasets.MNIST(DATA_DIR, train=False, download=True, transform=tf)
+    train_loader = DataLoader(train, batch_size=128, shuffle=True)
     test_loader = DataLoader(test, batch_size=1000, shuffle=False)
 
     model = MiniViT(dim=dim).to(DEVICE)
-    optimizer = optim.Adam(model.parameters(), lr=0.001)
+    optimizer = optim.Adam(model.parameters(), lr=1e-3)
     criterion = nn.CrossEntropyLoss()
 
-    def evaluate(model_net):
-        model_net.eval()
+    @torch.no_grad()
+    def evaluate(net):
+        net.eval()
         correct = 0
-        with torch.no_grad():
-            for d, t in test_loader:
-                d, t = d.to(DEVICE), t.to(DEVICE)
-                pred = model_net(d).argmax(dim=1, keepdim=True)
-                correct += pred.eq(t.view_as(pred)).sum().item()
-        return 100. * correct / len(test_loader.dataset)
+        for d, t in test_loader:
+            d, t = d.to(DEVICE), t.to(DEVICE)
+            correct += (net(d).argmax(dim=1) == t).sum().item()
+        return 100.0 * correct / len(test_loader.dataset)
 
-    results_log = []
-
-    for ep in range(epochs):
+    hist_c, hist_q, log_lines = [], [], []
+    for ep in range(1, epochs + 1):
         model.train()
         epoch_loss = 0.0
         for data, target in train_loader:
             data, target = data.to(DEVICE), target.to(DEVICE)
             optimizer.zero_grad()
-
-            loss_ce = criterion(model(data), target)
-
-            # 添加软微扰约束 (权重设为极小的 1e-4)
-            loss_reg = 0.0
-            for m in model.modules():
-                if isinstance(m, ClassicalResLinear):
-                    I = torch.eye(m.weight.shape[0], device=DEVICE)
-                    loss_reg += torch.nn.functional.mse_loss(m.weight, I)
-
-            loss = loss_ce + 1e-4 * loss_reg
+            loss = criterion(model(data), target)
+            # soft identity anchor keeps the core near-unitary (assumption NU)
+            I = torch.eye(dim, device=DEVICE)
+            loss = loss + 1e-4 * torch.nn.functional.mse_loss(model.block.core_layer.weight, I)
             loss.backward()
             optimizer.step()
             epoch_loss += loss.item()
 
-        avg_loss = epoch_loss / len(train_loader)
         acc_c = evaluate(model)
-
         classical_layer = model.block.core_layer
         model.block.core_layer = QuantumResLinearZeroShot(classical_layer, k).to(DEVICE)
         acc_q = evaluate(model)
         model.block.core_layer = classical_layer
 
-        log_str = f"Epoch {ep + 1:02d}/{epochs:02d} | Loss: {avg_loss:.4f} | [Classical] Acc: {acc_c:.2f}% | [Quantum k={k}] Acc: {acc_q:.2f}%"
-        print("  " + log_str)
-        results_log.append(log_str)
+        hist_c.append(acc_c); hist_q.append(acc_q)
+        line = (f"Epoch {ep:02d}/{epochs} | loss {epoch_loss / len(train_loader):.4f} | "
+                f"[classical] {acc_c:.2f}% | [quantum k={k}] {acc_q:.2f}% | gap {acc_c - acc_q:+.2f}")
+        print("  " + line); log_lines.append(line)
 
-    with open('./result/vit_accuracy.txt', 'w', encoding='utf-8') as f:
-        f.write("=== Experiment I: ViT Epoch-by-Epoch ===\n")
-        f.write("\n".join(results_log))
-    print("✅ ViT results saved to './result/vit_accuracy.txt'")
+    # --- save table ---
+    with open(os.path.join(RESULT_DIR, "vit_accuracy.txt"), "w", encoding="utf-8") as f:
+        f.write("=== Experiment I: ViT zero-shot quantum transfer ===\n")
+        f.write(f"dim={dim}  k={k}  qubits={int.bit_length(k) - 1}\n")
+        f.write("\n".join(log_lines) + "\n")
+
+    # --- save figure ---
+    epochs_x = list(range(1, epochs + 1))
+    plt.figure(figsize=(7.5, 4.8))
+    plt.plot(epochs_x, hist_c, "o-", lw=2.2, ms=6, color="#1f3b73", label="classical core")
+    plt.plot(epochs_x, hist_q, "s--", lw=2.2, ms=6, color="#b22222",
+             label=f"quantum zero-shot (k={k}, {int.bit_length(k) - 1} qubits)")
+    plt.xlabel("epoch", fontsize=12)
+    plt.ylabel("MNIST test accuracy (%)", fontsize=12)
+    plt.title("ViT: zero-shot quantum transfer of the residual core", fontsize=13, pad=8)
+    plt.xticks(epochs_x)
+    plt.grid(True, ls="--", alpha=0.5)
+    plt.legend(fontsize=11)
+    plt.tight_layout()
+    fig_path = os.path.join(RESULT_DIR, "vit_accuracy.png")
+    plt.savefig(fig_path, dpi=300, bbox_inches="tight")
+    plt.close()
+    print("  saved ->", os.path.relpath(fig_path, _HERE), "and result/vit_accuracy.txt")
 
 
 if __name__ == "__main__":
     t0 = time.time()
+    torch.manual_seed(0)
     run_vit_experiment()
     print(f"Time taken: {time.time() - t0:.2f}s")
