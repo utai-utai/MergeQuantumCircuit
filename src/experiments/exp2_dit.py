@@ -248,7 +248,7 @@ def render_and_save_hd(ema_model, diffusion, labels, path_name):
 # ============================================================================
 # Pipeline
 # ============================================================================
-def run(epochs_stage1=80, epochs_stage3=20, timesteps=100, batch_size=128, k=16):
+def run(epochs_stage1=80, epochs_stage3=20, timesteps=100, batch_size=128, k=16, save_pdf=False):
     torch.manual_seed(SEED)
     DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Executing quantum diffusion pipeline on: {DEVICE} "

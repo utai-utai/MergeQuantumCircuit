@@ -152,7 +152,7 @@ def simulate():
 # --------------------------------------------------------------------------
 # Figure
 # --------------------------------------------------------------------------
-def plot(res=None, hw=None):
+def plot(res=None, hw=None, save_pdf=False):
     """Plot effective dimension vs two-qubit gate count (simulation + ibm_kobe)."""
     import matplotlib.lines as mlines
     res = res or load()[0]
@@ -199,7 +199,7 @@ def plot(res=None, hw=None):
     ax.set_ylabel("effective dimension")
     ax.grid(True, which="major", ls="-", lw=0.4, alpha=0.2)
     fig.tight_layout()
-    plotting.savefig(fig, _FIG_STEM)
+    plotting.savefig(fig, _FIG_STEM, pdf=save_pdf)
     plt.close(fig)
 
 

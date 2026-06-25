@@ -214,7 +214,7 @@ def run_hardware():
 # --------------------------------------------------------------------------
 # Figure: simulation lines + 2^-n extrapolation + hardware sweep points
 # --------------------------------------------------------------------------
-def plot(sim=None, hw=None):
+def plot(sim=None, hw=None, save_pdf=False):
     if sim is None:
         sim, hw = load()
     from matplotlib.ticker import LogLocator, ScalarFormatter, NullFormatter
@@ -250,7 +250,7 @@ def plot(sim=None, hw=None):
         Line2D([], [], color=C_GLOBAL, lw=2.2, marker="o", ms=6.5, mec="white",
                label=r"global ansatz (sim)"),
         Line2D([], [], color=C_SUB, lw=2.2, marker="s", ms=6.0, mec="white",
-               label=rf"subspace ansatz (sim, $m={M}$)"),
+               label=rf"subspace ansatz (sim, $k={K}$)"),
         Line2D([], [], color=C_REF, lw=1.6, ls=(0, (5, 4)), label=r"$2^{-n}$ scaling"),
     ]
 
@@ -294,7 +294,7 @@ def plot(sim=None, hw=None):
               bbox_to_anchor=(0.015, 0.015), frameon=True, framealpha=0.92,
               edgecolor="0.7", borderpad=0.6, labelspacing=0.45, handlelength=2.0)
     fig.tight_layout()
-    plotting.savefig(fig, _FIG_STEM)
+    plotting.savefig(fig, _FIG_STEM, pdf=save_pdf)
     plt.close(fig)
 
 

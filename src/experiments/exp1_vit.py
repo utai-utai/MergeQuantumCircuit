@@ -90,7 +90,7 @@ class MiniViT(nn.Module):
         return self.head(x[:, 0])
 
 
-def run(dim=64, k=16, epochs=5):
+def run(dim=64, k=16, epochs=5, save_pdf=False):
     print("\n" + "=" * 60 + "\nExperiment I: ViT zero-shot quantum transfer")
     torch.manual_seed(SEED)
     train_loader, test_loader = mnist_loaders(batch_size=128)
@@ -133,10 +133,10 @@ def run(dim=64, k=16, epochs=5):
                 f"[classical] {acc_c:.2f}% | [quantum k={k}] {acc_q:.2f}% | gap {acc_c - acc_q:+.2f}")
         print("  " + line); log_lines.append(line)
 
-    _plot(hist_c, hist_q, k)
+    _plot(hist_c, hist_q, k, save_pdf)
 
 
-def _plot(hist_c, hist_q, k):
+def _plot(hist_c, hist_q, k, save_pdf=False):
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
@@ -147,12 +147,13 @@ def _plot(hist_c, hist_q, k):
              label=f"quantum zero-shot (k={k}, {int.bit_length(k) - 1} qubits)")
     plt.xlabel("epoch", fontsize=12)
     plt.ylabel("MNIST test accuracy (%)", fontsize=12)
-    plt.title("ViT: zero-shot quantum transfer of the residual core", fontsize=13, pad=8)
     plt.xticks(epochs_x)
     plt.grid(True, ls="--", alpha=0.5)
     plt.legend(fontsize=11)
     plt.tight_layout()
     fig_path = os.path.join(RESULT_DIR, "exp1_accuracy.png")
     plt.savefig(fig_path, dpi=300, bbox_inches="tight")
+    if save_pdf:
+        plt.savefig(os.path.join(RESULT_DIR, "exp1_accuracy.pdf"), bbox_inches="tight")
     plt.close()
     print("  saved ->", os.path.relpath(fig_path, os.path.dirname(RESULT_DIR)))

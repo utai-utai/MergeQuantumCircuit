@@ -166,7 +166,7 @@ def experiment_A(train_loader, test_loader, hidden_dim=64, k=16):
 # ==========================================================================
 # Validation 2 — error decomposition vs rank k (central Method figure)
 # ==========================================================================
-def experiment_B(W, k_list=(2, 4, 8, 16, 32, 64)):
+def experiment_B(W, k_list=(2, 4, 8, 16, 32, 64), save_pdf=False):
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
@@ -199,6 +199,8 @@ def experiment_B(W, k_list=(2, 4, 8, 16, 32, 64)):
     plt.tight_layout()
     fig_path = os.path.join(RESULT_DIR, "val_error_decomposition.png")
     plt.savefig(fig_path, dpi=300, bbox_inches="tight")
+    if save_pdf:
+        plt.savefig(os.path.join(RESULT_DIR, "val_error_decomposition.pdf"), bbox_inches="tight")
     plt.close()
 
 
@@ -229,3 +231,14 @@ def experiment_C(train_all, train_0_4, train_5_9, test_loader, hidden_dim=64, k=
         "generator separation ||H_A'-H_B'||_F drives the O(.^2) merge penalty.",
     ]
     print("\n".join(lines[2:]))
+
+
+# ==========================================================================
+# Entry point
+# ==========================================================================
+def run(hidden_dim=64, k=16, save_pdf=False):
+    from src.core.data import mnist_split_loaders
+    train_all, train_0_4, train_5_9, test = mnist_split_loaders()
+    W = experiment_A(train_all, test, hidden_dim=hidden_dim, k=k)
+    experiment_B(W, save_pdf=save_pdf)
+    experiment_C(train_all, train_0_4, train_5_9, test, hidden_dim=hidden_dim, k=k)

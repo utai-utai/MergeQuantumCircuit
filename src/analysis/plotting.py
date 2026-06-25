@@ -36,9 +36,13 @@ def set_house_style():
     return plt
 
 
-def savefig(fig, stem, dpi=400):
-    """Save <stem>.png into result/."""
+def savefig(fig, stem, dpi=400, pdf=False):
+    """Save <stem>.png (always) and optionally <stem>.pdf into result/."""
     png = os.path.join(RESULT_DIR, stem + ".png")
     fig.savefig(png, dpi=dpi, bbox_inches="tight")
     print("saved ->", os.path.relpath(png, os.path.dirname(RESULT_DIR)))
+    if pdf:
+        path = os.path.join(RESULT_DIR, stem + ".pdf")
+        fig.savefig(path, bbox_inches="tight")
+        print("saved ->", os.path.relpath(path, os.path.dirname(RESULT_DIR)))
     return png
