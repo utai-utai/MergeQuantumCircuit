@@ -5,7 +5,6 @@ MergeQuantumCircuit.egg-info
 paper_build
 *.png
 *.log
-*.json
 *.tex
 *.bib
 *.txt
