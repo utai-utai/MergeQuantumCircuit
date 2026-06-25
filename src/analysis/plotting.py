@@ -6,7 +6,7 @@ plus the vector PDF that LaTeX ingests.
 """
 import os
 
-from . import RESULT_DIR
+from src import RESULT_DIR
 
 # Consistent colours across all figures.
 PALETTE = {
@@ -37,9 +37,8 @@ def set_house_style():
 
 
 def savefig(fig, stem, dpi=400):
-    """Save <stem>.png (raster) and <stem>.pdf (vector) into result/."""
+    """Save <stem>.png into result/."""
     png = os.path.join(RESULT_DIR, stem + ".png")
     fig.savefig(png, dpi=dpi, bbox_inches="tight")
-    fig.savefig(png.replace(".png", ".pdf"), bbox_inches="tight")
-    print("saved figure ->", os.path.relpath(png, os.path.dirname(RESULT_DIR)), "(+ .pdf)")
+    print("saved ->", os.path.relpath(png, os.path.dirname(RESULT_DIR)))
     return png

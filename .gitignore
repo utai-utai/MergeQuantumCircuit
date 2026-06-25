@@ -9,5 +9,4 @@ paper_build
 *.tex
 *.bib
 *.txt
-*.env
 .env

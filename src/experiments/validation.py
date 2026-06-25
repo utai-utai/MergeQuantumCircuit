@@ -10,7 +10,7 @@ and manifold merging on MNIST.  Three demonstrations, all writing to result/:
   Experiment C — manifold merging of two specialised cores in the Lie algebra
       over the covering frame Q_C = orth([Q_A,Q_B]).
 
-  from src.method import run            # A + B + C
+  from src.experiments.val1_transfer import run   # A + B + C
 """
 import os
 import math
@@ -21,9 +21,9 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 
-from . import RESULT_DIR, SEED
-from .data import mnist_split_loaders, near_identity_weight
-from .geometric_qml import (
+from src import RESULT_DIR, SEED
+from src.core.data import mnist_split_loaders, near_identity_weight
+from src.core.geometric_qml import (
     transfer_map, mixing_operator, error_decomposition, merge_generators,
 )
 
@@ -128,16 +128,15 @@ def crosscheck_against_circuit(Q, U_A, k):
     mat_out = x_sub @ U_A.cpu().T
     max_dev = torch.max(torch.abs(circ_out - mat_out)).item()
     diagram = qml.draw(circuit)(x_sub, U_A.cpu())
-    with open(os.path.join(RESULT_DIR, "sim_circuit.txt"), "w", encoding="utf-8") as f:
-        f.write(f"Compiled subspace unitary on {num_qubits} qubits (k={k}):\n\n")
-        f.write(diagram + "\n\n")
-        f.write(f"max |circuit - matrix| = {max_dev:.2e}  "
-                f"(matrix operator O = Q U_A Q^H reproduces the physical circuit)\n")
+    print(f"Compiled subspace unitary on {num_qubits} qubits (k={k}):\n")
+    print(diagram)
+    print(f"\nmax |circuit - matrix| = {max_dev:.2e}  "
+          f"(matrix operator O = Q U_A Q^H reproduces the physical circuit)")
     return max_dev, diagram
 
 
 # ==========================================================================
-# Experiment A — zero-shot quantum transfer
+# Validation 1 — zero-shot quantum transfer
 # ==========================================================================
 def experiment_A(train_loader, test_loader, hidden_dim=64, k=16):
     print("\n" + "=" * 60 + f"\nExperiment A: Zero-shot quantum transfer (k={k})")
@@ -160,14 +159,12 @@ def experiment_A(train_loader, test_loader, hidden_dim=64, k=16):
         f"transfer error ||W-O||_F={tot:.4f}  (truncation={tr:.4f}, non-unitarity={nu:.4f})",
         f"circuit/matrix agreement: max deviation = {max_dev:.2e}",
     ]
-    with open(os.path.join(RESULT_DIR, "sim_expA_accuracy.txt"), "w", encoding="utf-8") as f:
-        f.write("\n".join(lines) + "\n")
     print("\n".join(lines[2:]))
     return W
 
 
 # ==========================================================================
-# Experiment B — error decomposition vs rank k (central Method figure)
+# Validation 2 — error decomposition vs rank k (central Method figure)
 # ==========================================================================
 def experiment_B(W, k_list=(2, 4, 8, 16, 32, 64)):
     import matplotlib
@@ -200,16 +197,13 @@ def experiment_B(W, k_list=(2, 4, 8, 16, 32, 64)):
                  xytext=(k_list[len(k_list) // 2], max(totals) * 0.62),
                  arrowprops=dict(arrowstyle="->", lw=1.3), fontsize=10, ha="center")
     plt.tight_layout()
-    fig_path = os.path.join(RESULT_DIR, "sim_expB_error_decomposition.png")
+    fig_path = os.path.join(RESULT_DIR, "val_error_decomposition.png")
     plt.savefig(fig_path, dpi=300, bbox_inches="tight")
     plt.close()
-    with open(os.path.join(RESULT_DIR, "sim_expB_error_decomposition.txt"), "w", encoding="utf-8") as f:
-        f.write("\n".join(lines) + "\n")
-    print("  saved figure ->", os.path.relpath(fig_path, os.path.dirname(RESULT_DIR)))
 
 
 # ==========================================================================
-# Experiment C — manifold merging
+# Validation 3 — manifold merging
 # ==========================================================================
 def experiment_C(train_all, train_0_4, train_5_9, test_loader, hidden_dim=64, k=16):
     print("\n" + "=" * 60 + f"\nExperiment C: Manifold merging (k={k})")
@@ -234,16 +228,4 @@ def experiment_C(train_all, train_0_4, train_5_9, test_loader, hidden_dim=64, k=
         f"[Quantum manifold merge]     Accuracy: {acc_quantum:.2f}%",
         "generator separation ||H_A'-H_B'||_F drives the O(.^2) merge penalty.",
     ]
-    with open(os.path.join(RESULT_DIR, "sim_expC_merge.txt"), "w", encoding="utf-8") as f:
-        f.write("\n".join(lines) + "\n")
     print("\n".join(lines[2:]))
-
-
-def run(hidden_dim=64, k=16):
-    t0 = time.time()
-    torch.manual_seed(SEED)
-    train_all, train_0_4, train_5_9, test = mnist_split_loaders()
-    W = experiment_A(train_all, test, hidden_dim, k)
-    experiment_B(W)
-    experiment_C(train_all, train_0_4, train_5_9, test, hidden_dim, k)
-    print(f"\nAll METHOD demonstrations finished in {time.time() - t0:.1f}s. Artefacts in result/.")

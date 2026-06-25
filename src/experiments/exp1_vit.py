@@ -6,7 +6,7 @@ At every epoch the classical core is analytically replaced (no quantum-side
 training) by the mixing operator O(Q,H)=Q e^{-iH} Q^H using the corrected
 transfer map; the resulting hybrid model is evaluated.
 
-  from src.exp_vit import run
+  from src.experiments.exp1_vit import run
 """
 import os
 import time
@@ -15,9 +15,9 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 
-from . import RESULT_DIR, SEED
-from .data import mnist_loaders, near_identity_weight
-from .geometric_qml import transfer_map, mixing_operator
+from src import RESULT_DIR, SEED
+from src.core.data import mnist_loaders, near_identity_weight
+from src.core.geometric_qml import transfer_map, mixing_operator
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -133,10 +133,6 @@ def run(dim=64, k=16, epochs=5):
                 f"[classical] {acc_c:.2f}% | [quantum k={k}] {acc_q:.2f}% | gap {acc_c - acc_q:+.2f}")
         print("  " + line); log_lines.append(line)
 
-    with open(os.path.join(RESULT_DIR, "vit_accuracy.txt"), "w", encoding="utf-8") as f:
-        f.write("=== Experiment I: ViT zero-shot quantum transfer ===\n")
-        f.write(f"dim={dim}  k={k}  qubits={int.bit_length(k) - 1}\n")
-        f.write("\n".join(log_lines) + "\n")
     _plot(hist_c, hist_q, k)
 
 
@@ -156,7 +152,7 @@ def _plot(hist_c, hist_q, k):
     plt.grid(True, ls="--", alpha=0.5)
     plt.legend(fontsize=11)
     plt.tight_layout()
-    fig_path = os.path.join(RESULT_DIR, "vit_accuracy.png")
+    fig_path = os.path.join(RESULT_DIR, "exp1_accuracy.png")
     plt.savefig(fig_path, dpi=300, bbox_inches="tight")
     plt.close()
-    print("  saved ->", os.path.relpath(fig_path, os.path.dirname(RESULT_DIR)), "and result/vit_accuracy.txt")
+    print("  saved ->", os.path.relpath(fig_path, os.path.dirname(RESULT_DIR)))

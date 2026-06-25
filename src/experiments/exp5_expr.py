@@ -1,5 +1,5 @@
 """
-Experiment V — Expressivity per Hardware Resource.
+Experiment V — Effective Dimension per Hardware Resource.
 
 Reviewer's point: barren-plateau mitigation is only worthwhile if it does not
 cost expressivity.  Raw Haar "expressibility" is the wrong metric -- by Holmes
@@ -15,7 +15,7 @@ Result: the plain ansatz saturates (effective-dimension ceiling ~25); the method
 keeps climbing (>42).  At matched 2q cost the method wins by +41..77%, confirmed
 on ibm_kobe (eff_dim 23.9 vs 17.2 at ~38 gates).
 
-  from src.exp_expr import simulate, plot, run_hardware, load
+  from src.experiments.exp5_expr import simulate, plot, run_hardware, load
 """
 import os
 import json
@@ -24,9 +24,13 @@ import numpy as np
 from qiskit import QuantumCircuit
 from qiskit.quantum_info import Statevector
 
-from . import RESULT_DIR, SEED, SHOTS, BACKEND_NAME
-from . import hardware, plotting
-from .metrics import fisher_information, effective_rank, effective_dimension
+from src import RESULT_DIR, SEED, SHOTS, BACKEND_NAME
+from src.core import hardware
+from src.analysis import plotting
+from src.analysis.metrics import fisher_information, effective_rank, effective_dimension
+
+_EXPDIR = os.path.join(RESULT_DIR, "exp5_expr")
+os.makedirs(_EXPDIR, exist_ok=True)
 
 N_QUBITS = 4
 DIM = 2 ** N_QUBITS
@@ -44,13 +48,15 @@ N_DATA_EFFDIM = 1e5                         # data size in the effective-dimensi
 # clears the ceiling even after the device noise penalty.  L=3 (method) / L=4 (pqc)
 # remain the matched-resource pair, preserving the apples-to-apples +39% claim.
 HW_SWEEP = {"method": [2, 3, 4], "pqc": [4, 8, 12]}
+HW_EXTRA_SWEEP = {"method": [5]}          # supplementary point: method L=5
 S_THETA_HW = 3
 D_DATA_HW = 2
 
-_SIM_JSON = "expr_resource_sim.json"
-_HW_JSON = "expr_resource_hw.json"
-_HW_JOBS_JSON = "expr_resource_hw_jobs.json"
-_FIG_STEM = "expr_resource"
+_SIM_JSON = "resource_sim.json"
+_HW_JSON = "resource_hw.json"
+_HW_JOBS_JSON = "resource_hw_jobs.json"
+_HW_EXTRA_JOBS_JSON = "resource_hw_extra_jobs.json"
+_FIG_STEM = "exp5_effdim"
 
 
 # --------------------------------------------------------------------------
@@ -138,7 +144,7 @@ def simulate():
             res[kind].append(rec)
             print(f"{kind:6s} L={L:2d} P={P:3d} 2q={twoq:3d} depth={depth:3d} "
                   f"eff_rank={rec['eff_rank']:6.2f}  eff_dim={rec['eff_dim']:6.2f}")
-    with open(os.path.join(RESULT_DIR, _SIM_JSON), "w") as f:
+    with open(os.path.join(_EXPDIR, _SIM_JSON), "w") as f:
         json.dump(res, f, indent=2)
     return res
 
@@ -147,31 +153,51 @@ def simulate():
 # Figure
 # --------------------------------------------------------------------------
 def plot(res=None, hw=None):
+    """Plot effective dimension vs two-qubit gate count (simulation + ibm_kobe)."""
+    import matplotlib.lines as mlines
     res = res or load()[0]
     plt = plotting.set_house_style()
     C_M, C_P = plotting.PALETTE["method"], plotting.PALETTE["global"]
-    fig, ax = plt.subplots(figsize=(7.0, 4.7))
-    for kind, c, mk, lab in (("method", C_M, "o", "method (parameterised entanglers)"),
-                             ("pqc", C_P, "s", "plain PQC (ry + CZ)")):
+    fig, ax = plt.subplots(figsize=(6.5, 4.5))
+
+    # ---- simulation curves (solid) ----
+    for kind, c, mk, lab in (
+        ("method", C_M, "o", "method"),
+        ("pqc",    C_P, "s", "plain PQC"),
+    ):
         tq = [r["twoq"] for r in res[kind]]
         ed = [r["eff_dim"] for r in res[kind]]
         ax.plot(tq, ed, "-", color=c, lw=2.0)
-        ax.plot(tq, ed, mk, color=c, ms=7, mec="white", mew=0.7, label=lab)
+        ax.plot(tq, ed, mk, color=c, ms=6.5, mec="white", mew=0.8, label=lab)
+
+    # ---- PQC saturation ceiling ----
     ceil = res["pqc"][-1]["eff_dim"]
-    ax.axhline(ceil, ls=(0, (4, 4)), lw=1.3, color=C_P, alpha=0.7)
-    ax.text(112, ceil + 0.8, "PQC ceiling", color=C_P, fontsize=9.5, ha="right", style="italic")
+    ax.axhline(ceil, ls=(0, (5, 4)), lw=1.2, color=C_P, alpha=0.65)
+    ax.text(17, ceil + 0.85, "PQC ceiling",
+            color=C_P, fontsize=9, ha="left", style="italic", alpha=0.9)
+
+    # ---- IBM hardware (dashed + star, colors match sim) ----
     if hw is not None:
         for kind, c in (("method", C_M), ("pqc", C_P)):
             pts = hw[kind] if isinstance(hw[kind], list) else [hw[kind]]
             tq = [r["twoq"] for r in pts]
             ed = [r["eff_dim"] for r in pts]
-            ax.plot(tq, ed, "--", color=c, lw=1.3, alpha=0.85, zorder=5)
-            lab = r"measured on $\mathtt{ibm\_kobe}$" if kind == "pqc" else None
-            ax.plot(tq, ed, "*", ms=16, color=c, mec="k", mew=0.7, zorder=6, label=lab)
-    ax.set_xlabel(r"transpiled two-qubit gates on $\mathtt{ibm\_kobe}$")
-    ax.set_ylabel(r"effective dimension")
-    ax.legend(fontsize=9.5, loc="lower right", frameon=True)
-    ax.grid(True, which="major", ls="-", lw=0.5, alpha=0.25)
+            ax.plot(tq, ed, "--", color=c, lw=1.4, alpha=0.85, zorder=5)
+            ax.plot(tq, ed, "*", ms=11, color=c, mec="k", mew=0.55, zorder=6)
+        hw_handle = mlines.Line2D(
+            [], [], color="0.35", ls="--", lw=1.4,
+            marker="*", ms=11, mec="k", mew=0.55,
+            label=r"ibm\_kobe (DD+twirling)",
+        )
+        handles, labels = ax.get_legend_handles_labels()
+        ax.legend(handles + [hw_handle], labels + [r"ibm\_kobe (DD+twirling)"],
+                  fontsize=9.5, loc="upper left", frameon=True)
+    else:
+        ax.legend(fontsize=9.5, loc="upper left", frameon=True)
+
+    ax.set_xlabel("transpiled two-qubit gates")
+    ax.set_ylabel("effective dimension")
+    ax.grid(True, which="major", ls="-", lw=0.4, alpha=0.2)
     fig.tight_layout()
     plotting.savefig(fig, _FIG_STEM)
     plt.close(fig)
@@ -247,16 +273,16 @@ def submit_hardware(mitigation=False):
     meta = {"backend": backend.name, "shots": SHOTS, "mitigation": mitigation,
             "job_ids": job_ids, "chunks": chunks, "n_circuits": len(isa),
             "twoq": {f"{k}:{L}": v for (k, L), v in twoq.items()}}
-    with open(os.path.join(RESULT_DIR, _HW_JOBS_JSON), "w") as f:
+    with open(os.path.join(_EXPDIR, _HW_JOBS_JSON), "w") as f:
         json.dump(meta, f, indent=2)
-    print(f"saved {len(job_ids)} job id(s) -> result/{_HW_JOBS_JSON}")
+    print(f"saved {len(job_ids)} job id(s) -> result/exp5_expr/{_HW_JOBS_JSON}")
     return meta
 
 
 def fetch_hardware():
     """Retrieve the submitted sweep, reduce to effective dimension per operating
-    point, and write result/expr_resource_hw.json."""
-    with open(os.path.join(RESULT_DIR, _HW_JOBS_JSON)) as f:
+    point, and write result/exp5_expr/resource_hw.json."""
+    with open(os.path.join(_EXPDIR, _HW_JOBS_JSON)) as f:
         meta = json.load(f)
     specs, _ = _hw_specs()
     assert len(specs) == meta["n_circuits"], "spec/circuit count drift -- did the sweep config change?"
@@ -282,9 +308,9 @@ def fetch_hardware():
             hw[kind].append(rec)
             print(f"[{meta['backend']}] {kind:6s} L={L:2d} P={P:3d} 2q={rec['twoq']:3d} "
                   f"eff_rank={rec['eff_rank']:.2f}  eff_dim={rec['eff_dim']:.2f}")
-    with open(os.path.join(RESULT_DIR, _HW_JSON), "w") as f:
+    with open(os.path.join(_EXPDIR, _HW_JSON), "w") as f:
         json.dump(hw, f, indent=2)
-    print(f"saved -> result/{_HW_JSON}")
+    print(f"saved -> result/exp5_expr/{_HW_JSON}")
     return hw
 
 
@@ -296,123 +322,101 @@ def run_hardware(mitigation=False):
 
 
 # --------------------------------------------------------------------------
-# Zero-noise extrapolation for the one deep operating point whose genuine
-# expressivity the device noise crushes (method L=4).  DD + twirling cannot
-# recover two-qubit-gate error; ZNE (gate folding + extrapolation) can.  We
-# estimate the zero-noise computational-basis distribution per circuit by
-# measuring the 2^n basis projectors as Estimator observables under ZNE, then
-# feed those distributions through the same parameter-shift Fisher pipeline.
+# Supplementary hardware point(s) (default: method L=5) -- appended to the
+# existing resource_hw.json without re-running the full sweep.
+# Uses an independent RNG seed (SEED+31) so thetas are fresh.
 # --------------------------------------------------------------------------
-ZNE_KIND, ZNE_L = "method", 4
-ZNE_NOISE_FACTORS = [1, 3, 5]
-_ZNE_JOBS_JSON = "expr_resource_zne_jobs.json"
-
-
-def _basis_projectors(n):
-    """The 2^n computational-basis projectors |y><y| as SparsePauliOp on n
-    qubits, indexed so that <P_y> equals the probability counts_to_probs assigns
-    to index y (qubit q is bit (y>>q)&1)."""
-    from qiskit.quantum_info import SparsePauliOp
-    ops = []
-    for y in range(2 ** n):
-        bits = [(y >> q) & 1 for q in range(n)]
-        labels, coeffs = [], []
-        for mask in range(2 ** n):                       # subset of qubits carrying Z
-            lab = "".join("Z" if (mask >> q) & 1 else "I" for q in range(n - 1, -1, -1))
-            sign = 1
-            for q in range(n):
-                if (mask >> q) & 1:
-                    sign *= (-1) ** bits[q]
-            labels.append(lab); coeffs.append(sign / (2 ** n))
-        ops.append(SparsePauliOp(labels, coeffs))
-    return ops
-
-
-def _zne_specs():
-    """Unmeasured circuits (Estimator supplies the measurement) for the ZNE point,
-    with the same (S_THETA_HW, D_DATA_HW) Fisher structure as the sampler sweep."""
-    rng = np.random.default_rng(SEED + 99)
+def _hw_extra_specs(sweep=None):
+    sweep = sweep or HW_EXTRA_SWEEP
+    rng = np.random.default_rng(SEED + 31)
     X = make_data(D_DATA_HW, seed=SEED + 3)
-    kind, L = ZNE_KIND, ZNE_L
-    P = nparams(kind, L)
     specs, circuits = [], []
-    for s in range(S_THETA_HW):
-        theta = rng.uniform(0, 2 * np.pi, P)
-        for d in range(D_DATA_HW):
-            specs.append((kind, L, s, d, -1, 0)); circuits.append(build(kind, X[d], theta, L))
-            for j in range(P):
-                for sign in (+1, -1):
-                    tt = theta.copy(); tt[j] += sign * np.pi / 2
-                    specs.append((kind, L, s, d, j, sign)); circuits.append(build(kind, X[d], tt, L))
-    return specs, circuits, P
+    for kind, Ls in sweep.items():
+        for L in Ls:
+            P = nparams(kind, L)
+            for s in range(S_THETA_HW):
+                theta = rng.uniform(0, 2 * np.pi, P)
+                for d in range(D_DATA_HW):
+                    qc = build(kind, X[d], theta, L); qc.measure_all()
+                    circuits.append(qc); specs.append((kind, L, s, d, -1, 0))
+                    for j in range(P):
+                        for sign in (+1, -1):
+                            tt = theta.copy(); tt[j] += sign * np.pi / 2
+                            qc = build(kind, X[d], tt, L); qc.measure_all()
+                            circuits.append(qc); specs.append((kind, L, s, d, j, sign))
+    return specs, circuits
 
 
-def submit_zne():
-    """Transpile method L=4, attach basis-projector observables, and submit with
-    ZNE (non-blocking).  Job ids saved for fetch_zne."""
-    specs, circuits, P = _zne_specs()
+def submit_hardware_extra(sweep=None, mitigation=True):
+    """Transpile and submit extra operating points to ibm_kobe (non-blocking).
+    Job ids saved to result/exp5_expr/resource_hw_extra_jobs.json."""
+    sweep = sweep or HW_EXTRA_SWEEP
+    specs, circuits = _hw_extra_specs(sweep)
     pm, tag = hardware.make_passmanager()
     isa = [pm.run(c) for c in circuits]
-    projs = _basis_projectors(N_QUBITS)
-    pubs = [(isa[i], [op.apply_layout(isa[i].layout) for op in projs]) for i in range(len(isa))]
+    twoq_meta = {}
+    for kind, Ls in sweep.items():
+        for L in Ls:
+            idx = [i for i, sp in enumerate(specs) if sp[0] == kind and sp[1] == L]
+            twoq_val = int(np.median([isa[i].num_nonlocal_gates() for i in idx]))
+            twoq_meta[f"{kind}:{L}"] = twoq_val
+            print(f"  {kind} L={L} P={nparams(kind, L):3d} 2q={twoq_val}")
     backend = hardware.get_backend(BACKEND_NAME)
-    print(f"submitting {len(pubs)} ZNE pubs ({ZNE_KIND} L={ZNE_L}, P={P}) to {backend.name} ...")
-    job_ids, chunks = hardware.submit_estimator_zne(pubs, backend, shots=SHOTS,
-                                                    noise_factors=ZNE_NOISE_FACTORS)
-    meta = {"backend": backend.name, "shots": SHOTS, "kind": ZNE_KIND, "L": ZNE_L, "P": P,
-            "noise_factors": ZNE_NOISE_FACTORS, "job_ids": job_ids, "chunks": chunks,
-            "n_pubs": len(pubs)}
-    with open(os.path.join(RESULT_DIR, _ZNE_JOBS_JSON), "w") as f:
+    print(f"submitting {len(isa)} circuits to {backend.name} "
+          f"(mitigation={'on' if mitigation else 'off'}) ...")
+    job_ids, chunks = hardware.submit_sampler(isa, backend, shots=SHOTS, mitigation=mitigation)
+    meta = {"backend": backend.name, "shots": SHOTS, "mitigation": mitigation,
+            "job_ids": job_ids, "chunks": chunks, "n_circuits": len(isa),
+            "twoq": twoq_meta}
+    with open(os.path.join(_EXPDIR, _HW_EXTRA_JOBS_JSON), "w") as f:
         json.dump(meta, f, indent=2)
-    print(f"saved {len(job_ids)} job id(s) -> result/{_ZNE_JOBS_JSON}")
+    print(f"saved {len(job_ids)} job id(s) -> result/exp5_expr/{_HW_EXTRA_JOBS_JSON}")
     return meta
 
 
-def fetch_zne():
-    """Retrieve the ZNE job, rebuild zero-noise distributions from the projector
-    expectations, recompute eff_dim for the deep point, and patch it into
-    result/expr_resource_hw.json (then replot)."""
-    with open(os.path.join(RESULT_DIR, _ZNE_JOBS_JSON)) as f:
+def fetch_hardware_extra(sweep=None):
+    """Retrieve the extra job, compute eff_dim, and append/overwrite in
+    result/exp5_expr/resource_hw.json, then replot."""
+    sweep = sweep or HW_EXTRA_SWEEP
+    with open(os.path.join(_EXPDIR, _HW_EXTRA_JOBS_JSON)) as f:
         meta = json.load(f)
-    specs, _, P = _zne_specs()
-    assert len(specs) == meta["n_pubs"], "spec/pub count drift -- did ZNE config change?"
+    specs, _ = _hw_extra_specs(sweep)
+    assert len(specs) == meta["n_circuits"], "spec/circuit count drift"
     service = hardware.get_service()
     results = hardware.fetch_results(service, meta["job_ids"])
     probs_map, gi = {}, 0
     for res, n in zip(results, meta["chunks"]):
         for li in range(n):
-            evs = np.asarray(res[li].data.evs, dtype=float).ravel()   # <P_y>, 2^N values
-            p = np.clip(evs, 0.0, None)
-            p = p / p.sum() if p.sum() > 0 else np.ones_like(p) / len(p)
-            probs_map[specs[gi]] = p
+            probs_map[specs[gi]] = hardware.counts_to_probs(
+                hardware.get_counts(res, li), DIM, SHOTS)
             gi += 1
-    Fs = [_fisher_from_probs(probs_map, meta["kind"], meta["L"], s, list(range(D_DATA_HW)), P)
-          for s in range(S_THETA_HW)]
-    eff_dim = float(effective_dimension(Fs, N_DATA_EFFDIM))
-    eff_rank = float(np.mean([effective_rank(F) for F in Fs]))
-    print(f"[ZNE {meta['backend']}] {meta['kind']} L={meta['L']} P={P} "
-          f"eff_rank={eff_rank:.2f}  eff_dim={eff_dim:.2f}")
-
-    hw_path = os.path.join(RESULT_DIR, _HW_JSON)
+    twoq = {(k.split(":")[0], int(k.split(":")[1])): v
+            for k, v in meta["twoq"].items()}
+    hw_path = os.path.join(_EXPDIR, _HW_JSON)
     hw = json.load(open(hw_path))
-    for rec in hw[meta["kind"]]:
-        if rec["L"] == meta["L"]:
-            rec["eff_dim_raw"] = rec.get("eff_dim")          # keep the DD+twirling value
-            rec["eff_dim"] = eff_dim
-            rec["eff_rank"] = eff_rank
-            rec["zne"] = True
-            rec["noise_factors"] = meta["noise_factors"]
+    for kind, Ls in sweep.items():
+        for L in Ls:
+            P = nparams(kind, L)
+            Fs = [_fisher_from_probs(probs_map, kind, L, s, list(range(D_DATA_HW)), P)
+                  for s in range(S_THETA_HW)]
+            rec = {"L": L, "P": P, "twoq": twoq[(kind, L)],
+                   "eff_rank": float(np.mean([effective_rank(F) for F in Fs])),
+                   "eff_dim": float(effective_dimension(Fs, N_DATA_EFFDIM))}
+            print(f"[{meta['backend']}] {kind} L={L} P={P} 2q={rec['twoq']} "
+                  f"eff_rank={rec['eff_rank']:.2f}  eff_dim={rec['eff_dim']:.2f}")
+            existing = [r for r in hw.get(kind, []) if r["L"] != L]
+            hw[kind] = sorted(existing + [rec], key=lambda r: r["L"])
     with open(hw_path, "w") as f:
         json.dump(hw, f, indent=2)
-    print(f"patched {meta['kind']} L={meta['L']} eff_dim -> {eff_dim:.2f} in result/{_HW_JSON}")
+    print(f"appended -> result/exp5_expr/{_HW_JSON}")
     plot(*load())
     return hw
 
 
 def load():
-    """(sim, hw_or_None) from saved JSON, for viewing results without re-running."""
-    with open(os.path.join(RESULT_DIR, _SIM_JSON)) as f:
+    """(sim, hw_or_None) from saved JSONs."""
+    with open(os.path.join(_EXPDIR, _SIM_JSON)) as f:
         sim = json.load(f)
-    hw_path = os.path.join(RESULT_DIR, _HW_JSON)
+    hw_path = os.path.join(_EXPDIR, _HW_JSON)
     hw = json.load(open(hw_path)) if os.path.exists(hw_path) else None
     return sim, hw

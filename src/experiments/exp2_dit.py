@@ -8,8 +8,8 @@ residual MLP layers are transferred to trainable quantum mixing operators.
   Phase 3 — few-shot fine-tuning of the Hermitian generators H only (the
             warm-started, identity-neighbourhood initialisation).
 
-  from src.exp_dit import run            # run(epochs_stage1=80, epochs_stage3=20)
-  from src.exp_dit import run; run(epochs_stage1=2, epochs_stage3=1)   # smoke
+  from src.experiments.exp2_dit import run            # run(epochs_stage1=80, epochs_stage3=20)
+  from src.experiments.exp2_dit import run; run(epochs_stage1=2, epochs_stage3=1)   # smoke
 """
 import os
 import math
@@ -19,9 +19,9 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torchvision.utils import save_image
 
-from . import RESULT_DIR, SEED
-from .data import mnist_loaders, near_identity_weight
-from .geometric_qml import transfer_map
+from src import RESULT_DIR, SEED
+from src.core.data import mnist_loaders, near_identity_weight
+from src.core.geometric_qml import transfer_map
 
 
 # ============================================================================
@@ -285,7 +285,7 @@ def run(epochs_stage1=80, epochs_stage3=20, timesteps=100, batch_size=128, k=16)
             line = (f"[Phase1] Epoch {epoch:02d}/{epochs_stage1} | MSE {total_loss / len(loader):.4f} "
                     f"| Reg {total_reg / len(loader):.4f}")
             print(line); metrics.append(line)
-    hd_classical = render_and_save_hd(ema, diffusion, eval_labels, os.path.join(RESULT_DIR, "1_classical_hd.png"))
+    hd_classical = render_and_save_hd(ema, diffusion, eval_labels, os.path.join(RESULT_DIR, "exp2_classical.png"))
 
     # ---- Phase 2: zero-shot quantum transfer ----
     print("\n=== Phase 2: Zero-shot quantum transfer (no training) ===")
@@ -293,7 +293,7 @@ def run(epochs_stage1=80, epochs_stage3=20, timesteps=100, batch_size=128, k=16)
     model.convert_to_quantum(k=k)
     model.to(DEVICE)
     ema = EMA(model, decay=0.999)
-    hd_zeroshot = render_and_save_hd(ema, diffusion, eval_labels, os.path.join(RESULT_DIR, "2_quantum_zeroshot_hd.png"))
+    hd_zeroshot = render_and_save_hd(ema, diffusion, eval_labels, os.path.join(RESULT_DIR, "exp2_zeroshot.png"))
     metrics.append(f"[Phase2] converted cores to quantum (k={k}, {int.bit_length(k) - 1} qubits), zero-shot sampled")
 
     # ---- Phase 3: quantum fine-tuning (Hamiltonian only) ----
@@ -318,13 +318,5 @@ def run(epochs_stage1=80, epochs_stage3=20, timesteps=100, batch_size=128, k=16)
             total_q_loss += loss.item()
         line = f"[Phase3] Quantum Epoch {epoch:02d}/{epochs_stage3} | MSE {total_q_loss / len(loader):.4f}"
         print(line); metrics.append(line)
-    hd_finetuned = render_and_save_hd(ema, diffusion, eval_labels, os.path.join(RESULT_DIR, "3_quantum_finetuned_hd.png"))
-
-    # ---- combined evolution chart ----
-    chart = torch.cat([hd_classical, hd_zeroshot, hd_finetuned], dim=2)
-    save_image(chart, os.path.join(RESULT_DIR, "0_all_evolution_hd.png"), nrow=1)
-    with open(os.path.join(RESULT_DIR, "dit_metrics.txt"), "w", encoding="utf-8") as f:
-        f.write("=== Experiment II: DiT quantum diffusion ===\n")
-        f.write("rows of 0_all_evolution_hd.png: classical | zero-shot quantum | fine-tuned quantum\n")
-        f.write("\n".join(metrics) + "\n")
-    print("\n[SUCCESS] HD comparison + dit_metrics.txt saved to result/.")
+    hd_finetuned = render_and_save_hd(ema, diffusion, eval_labels, os.path.join(RESULT_DIR, "exp2_finetuned.png"))
+    print("\n[SUCCESS] HD images saved to result/.")

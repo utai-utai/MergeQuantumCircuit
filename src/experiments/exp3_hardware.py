@@ -8,7 +8,7 @@ output distribution to the ideal one (Hellinger fidelity, total-variation
 distance).  Sweeps the subspace rank k in {2,4,8,16} (= 1..4 qubits) to expose
 how the hardware fidelity tracks the size of the compiled subspace unitary.
 
-  from src.exp_hardware import run, plot, load    # run(submit=True) uses device time
+  from src.experiments.exp3_hardware import run, plot, load    # run(submit=True) uses device time
 """
 import os
 import json
@@ -19,16 +19,20 @@ from qiskit import QuantumCircuit
 from qiskit.circuit.library import UnitaryGate
 from qiskit.quantum_info import Statevector
 
-from . import RESULT_DIR, SEED, SHOTS, BACKEND_NAME
-from . import hardware, plotting
-from .metrics import hellinger_fidelity, tvd
-from .method import ClassicalResNet, train_model, DEVICE
-from .data import mnist_split_loaders
-from .geometric_qml import transfer_map
+from src import RESULT_DIR, SEED, SHOTS, BACKEND_NAME
+from src.core import hardware
+from src.analysis import plotting
+from src.analysis.metrics import hellinger_fidelity, tvd
+from src.experiments.validation import ClassicalResNet, train_model, DEVICE
+from src.core.data import mnist_split_loaders
+from src.core.geometric_qml import transfer_map
+
+_EXPDIR = os.path.join(RESULT_DIR, "exp3_hardware")
+os.makedirs(_EXPDIR, exist_ok=True)
 
 K_LIST = [2, 4, 8, 16]      # subspace dims -> 1,2,3,4 qubits
 N_INPUTS = 2                # inputs per k
-_FIG_STEM = "hw_ibm_kobe_fidelity"
+_FIG_STEM = "exp3_fidelity"
 
 
 # --------------------------------------------------------------------------
@@ -144,7 +148,7 @@ def run(submit=False):
 
     summary = {"backend": backend_name, "shots": SHOTS, "per_k": per_k, "runs": jobs}
     tag = "submit" if submit else "dryrun"
-    with open(os.path.join(RESULT_DIR, f"hw_ibm_kobe_{tag}.json"), "w", encoding="utf-8") as f:
+    with open(os.path.join(_EXPDIR, f"{tag}.json"), "w", encoding="utf-8") as f:
         json.dump(summary, f, indent=2)
 
     print(f"\nBackend: {backend_name}  (shots={SHOTS})")
@@ -194,8 +198,8 @@ def plot(summary=None, rep_k=8):
 
 def load(tag="submit"):
     """Saved summary ('submit' = real device, 'dryrun' = Aer)."""
-    path = os.path.join(RESULT_DIR, f"hw_ibm_kobe_{tag}.json")
+    path = os.path.join(_EXPDIR, f"{tag}.json")
     if not os.path.exists(path):                          # fall back to whichever exists
-        path = os.path.join(RESULT_DIR, "hw_ibm_kobe_dryrun.json")
+        path = os.path.join(_EXPDIR, "dryrun.json")
     with open(path) as f:
         return json.load(f)

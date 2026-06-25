@@ -12,7 +12,7 @@ Observable: parity Z^{otimes a} over the qubits the ansatz actually drives
 trainability claim is isolated from the exponential readout-error suppression a
 global Z^{otimes n} would incur on the idle qubits.
 
-  from src.exp_bp import simulate, run_hardware, plot, load
+  from src.experiments.exp4_bp import simulate, run_hardware, plot, load
 """
 import os
 import json
@@ -21,9 +21,13 @@ import numpy as np
 from qiskit import QuantumCircuit
 from qiskit.quantum_info import Statevector
 
-from . import RESULT_DIR, SHOTS, BACKEND_NAME
-from . import hardware, plotting
-from .metrics import parity_op
+from src import RESULT_DIR, SHOTS, BACKEND_NAME
+from src.core import hardware
+from src.analysis import plotting
+from src.analysis.metrics import parity_op
+
+_EXPDIR = os.path.join(RESULT_DIR, "exp4_bp")
+os.makedirs(_EXPDIR, exist_ok=True)
 
 K = 16                       # subspace dim -> m = 4 active qubits
 M = int(np.log2(K))
@@ -36,9 +40,9 @@ S_SIM = 80                   # random inits for simulation variance
 S_HW = 20                    # random inits per (n, kind) for hardware variance
 RNG = np.random.default_rng(0)
 
-_SIM_JSON = "bp_sim.json"
-_HW_JSON = "bp_hw_ibm_kobe.json"
-_FIG_STEM = "bp_gradient_variance"
+_SIM_JSON = "sim.json"
+_HW_JSON = "hw.json"
+_FIG_STEM = "exp4_gradient_variance"
 
 
 # --------------------------------------------------------------------------
@@ -111,7 +115,7 @@ def simulate():
     for n in N_LIST_SUB_SIM:
         out["subspace_var"].append(_var_sim("subspace", n))
         print(f"[sim] n={n:3d} subspace Var={out['subspace_var'][-1]:.3e}")
-    with open(os.path.join(RESULT_DIR, _SIM_JSON), "w") as f:
+    with open(os.path.join(_EXPDIR, _SIM_JSON), "w") as f:
         json.dump(out, f, indent=2)
     return out
 
@@ -202,7 +206,7 @@ def run_hardware():
             result[f"{kind}_var"].append(float(np.var(gs)))
         print(f"[{backend.name} n={n:>4}] global Var={result['global_var'][-1]:.3e} | "
               f"subspace Var={result['subspace_var'][-1]:.3e}")
-    with open(os.path.join(RESULT_DIR, _HW_JSON), "w") as f:
+    with open(os.path.join(_EXPDIR, _HW_JSON), "w") as f:
         json.dump(result, f, indent=2)
     return result
 
@@ -295,8 +299,8 @@ def plot(sim=None, hw=None):
 
 
 def load():
-    with open(os.path.join(RESULT_DIR, _SIM_JSON)) as f:
+    with open(os.path.join(_EXPDIR, _SIM_JSON)) as f:
         sim = json.load(f)
-    hw_path = os.path.join(RESULT_DIR, _HW_JSON)
+    hw_path = os.path.join(_EXPDIR, _HW_JSON)
     hw = json.load(open(hw_path)) if os.path.exists(hw_path) else None
     return sim, hw
