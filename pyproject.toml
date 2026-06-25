@@ -6,7 +6,21 @@ build-backend = "setuptools.build_meta"
 name = "MergeQuantumCircuit"
 version = "0.1.0"
 description = "Quantum circuit merging project"
+requires-python = ">=3.11"
 dependencies = [
+    "numpy>=1.26,<2",
+    "scipy>=1.11",
     "matplotlib>=3.8",
-    "pennylane>=0.35"
+    "ipython>=8",
+    "ipykernel>=6",
+    "torch>=2.0",
+    "torchvision>=0.15",
+    "pennylane>=0.35",
+    "qiskit>=1.0",
+    "qiskit-aer>=0.14",
+]
+
+[project.optional-dependencies]
+hardware = [
+    "qiskit-ibm-runtime>=0.23",
 ]
