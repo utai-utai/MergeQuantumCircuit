@@ -155,14 +155,15 @@ def simulate():
 def plot(res=None, hw=None, save_pdf=False):
     """Plot effective dimension vs two-qubit gate count (simulation + ibm_kobe)."""
     import matplotlib.lines as mlines
-    res = res or load()[0]
+    if res is None:
+        res, hw = load()
     plt = plotting.set_house_style()
     C_M, C_P = plotting.PALETTE["method"], plotting.PALETTE["global"]
     fig, ax = plt.subplots(figsize=(6.5, 4.5))
 
     # ---- simulation curves (solid) ----
     for kind, c, mk, lab in (
-        ("method", C_M, "o", "method"),
+        ("method", C_M, "o", "proposed method"),
         ("pqc",    C_P, "s", "plain PQC"),
     ):
         tq = [r["twoq"] for r in res[kind]]
@@ -187,10 +188,10 @@ def plot(res=None, hw=None, save_pdf=False):
         hw_handle = mlines.Line2D(
             [], [], color="0.35", ls="--", lw=1.4,
             marker="*", ms=11, mec="k", mew=0.55,
-            label=r"ibm\_kobe (DD+twirling)",
+            label=r"$\mathtt{ibm\_kobe}$ (DD+twirling)",
         )
         handles, labels = ax.get_legend_handles_labels()
-        ax.legend(handles + [hw_handle], labels + [r"ibm\_kobe (DD+twirling)"],
+        ax.legend(handles + [hw_handle], labels + [r"$\mathtt{ibm\_kobe}$ (DD+twirling)"],
                   fontsize=9.5, loc="upper left", frameon=True)
     else:
         ax.legend(fontsize=9.5, loc="upper left", frameon=True)

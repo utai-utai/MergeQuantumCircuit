@@ -250,7 +250,7 @@ def plot(sim=None, hw=None, save_pdf=False):
         Line2D([], [], color=C_GLOBAL, lw=2.2, marker="o", ms=6.5, mec="white",
                label=r"global ansatz (sim)"),
         Line2D([], [], color=C_SUB, lw=2.2, marker="s", ms=6.0, mec="white",
-               label=rf"subspace ansatz (sim, $k={K}$)"),
+               label=rf"proposed method (sim, $k={K}$)"),
         Line2D([], [], color=C_REF, lw=1.6, ls=(0, (5, 4)), label=r"$2^{-n}$ scaling"),
     ]
 
@@ -264,7 +264,7 @@ def plot(sim=None, hw=None, save_pdf=False):
             Line2D([], [], color=C_GLOBAL, lw=0, marker="*", ms=15, mec="k",
                    label=r"global on $\mathtt{ibm\_kobe}$"),
             Line2D([], [], color=C_SUB, lw=0, marker="*", ms=15, mec="k",
-                   label=r"subspace on $\mathtt{ibm\_kobe}$"),
+                   label=r"proposed method on $\mathtt{ibm\_kobe}$"),
         ]
 
     ax.annotate(r"trainable: $\mathrm{Var}\sim\Omega(1/k)$",

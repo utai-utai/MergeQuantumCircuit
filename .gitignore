@@ -11,3 +11,4 @@ paper_build
 *.bib
 *.txt
 .env
+*.pdf

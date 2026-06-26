@@ -189,13 +189,12 @@ def experiment_B(W, k_list=(2, 4, 8, 16, 32, 64), save_pdf=False):
     plt.xticks(k_list, [str(k) for k in k_list])
     plt.xlabel(r"Truncation rank $k$  ($\log_2 k$ qubits)", fontsize=13)
     plt.ylabel("Frobenius error", fontsize=13)
-    plt.title("Quantization error decomposition (Theorem 4.2)", fontsize=14, pad=10)
     plt.grid(True, which="both", ls="--", alpha=0.5)
     plt.legend(fontsize=11, framealpha=0.95)
-    plt.annotate("full rank: truncation $\\to$ 0,\ntotal $=$ non-unitarity floor",
-                 xy=(k_list[-1], totals[-1]),
-                 xytext=(k_list[len(k_list) // 2], max(totals) * 0.62),
-                 arrowprops=dict(arrowstyle="->", lw=1.3), fontsize=10, ha="center")
+    # plt.annotate("full rank: truncation $\\to$ 0,\ntotal $=$ non-unitarity floor",
+    #              xy=(k_list[-1], totals[-1]),
+    #              xytext=(k_list[len(k_list) // 2], max(totals) * 0.62),
+    #              arrowprops=dict(arrowstyle="->", lw=1.3), fontsize=10, ha="center")
     plt.tight_layout()
     fig_path = os.path.join(RESULT_DIR, "val_error_decomposition.png")
     plt.savefig(fig_path, dpi=300, bbox_inches="tight")
