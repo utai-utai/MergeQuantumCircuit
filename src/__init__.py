@@ -17,6 +17,10 @@ os.makedirs(RESULT_DIR, exist_ok=True)
 # Global defaults shared across experiments.
 SEED = 0
 SHOTS = 4096
-BACKEND_NAME = "ibm_kobe"
+TRANSPILE_SEED = 0
+BACKEND_NAME = "ibm_kawasaki"
 
-__all__ = ["ROOT_DIR", "RESULT_DIR", "DATA_DIR", "SEED", "SHOTS", "BACKEND_NAME"]
+__all__ = [
+    "ROOT_DIR", "RESULT_DIR", "DATA_DIR", "SEED", "SHOTS",
+    "TRANSPILE_SEED", "BACKEND_NAME",
+]

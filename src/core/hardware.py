@@ -10,10 +10,12 @@ Credentials live in ROOT_DIR/.env as IBM_API_KEY + IBM_CRN_STRING (channel
 ibm_cloud).  The token/CRN are never printed.
 """
 import os
+import platform
+from datetime import datetime, timezone
 
 import numpy as np
 
-from src import ROOT_DIR, BACKEND_NAME, SHOTS
+from src import ROOT_DIR, BACKEND_NAME, SHOTS, TRANSPILE_SEED
 
 
 # --------------------------------------------------------------------------
@@ -33,17 +35,13 @@ def load_env(path=None):
 
 
 def get_service():
-    """QiskitRuntimeService authenticated from .env (tries both channels)."""
+    """QiskitRuntimeService authenticated from the project-local .env."""
     from qiskit_ibm_runtime import QiskitRuntimeService
     creds = load_env()
     token, crn = creds["IBM_API_KEY"], creds["IBM_CRN_STRING"]
-    last_err = None
-    for channel in ("ibm_cloud", "ibm_quantum_platform"):
-        try:
-            return QiskitRuntimeService(channel=channel, token=token, instance=crn)
-        except Exception as e:                              # noqa
-            last_err = e
-    raise RuntimeError(f"Could not authenticate on any channel: {last_err}")
+    return QiskitRuntimeService(
+        channel="ibm_quantum_platform", token=token, instance=crn
+    )
 
 
 def get_backend(name=BACKEND_NAME):
@@ -53,7 +51,8 @@ def get_backend(name=BACKEND_NAME):
 # --------------------------------------------------------------------------
 # Transpilation
 # --------------------------------------------------------------------------
-def make_passmanager(prefer_real=True, name=BACKEND_NAME, optimization_level=3):
+def make_passmanager(prefer_real=True, name=BACKEND_NAME, optimization_level=3,
+                     seed_transpiler=TRANSPILE_SEED):
     """Pass manager + backend tag.  Transpiling against the real target is free
     (no device time) and gives accurate heavy-hex two-qubit-gate counts; falls
     back to AerSimulator when the backend cannot be reached."""
@@ -62,13 +61,45 @@ def make_passmanager(prefer_real=True, name=BACKEND_NAME, optimization_level=3):
         try:
             backend = get_backend(name)
             return generate_preset_pass_manager(optimization_level=optimization_level,
-                                                backend=backend), backend.name
+                                                backend=backend,
+                                                seed_transpiler=seed_transpiler), backend.name
         except Exception as e:                              # noqa
             print(f"WARNING: real backend unavailable ({e}); using AerSimulator "
                   f"(2q-gate counts will be optimistic)")
     from qiskit_aer import AerSimulator
     return generate_preset_pass_manager(optimization_level=optimization_level,
-                                        backend=AerSimulator()), "aer"
+                                        backend=AerSimulator(),
+                                        seed_transpiler=seed_transpiler), "aer"
+
+
+def backend_metadata(backend):
+    """Small JSON-safe provenance record for a hardware submission."""
+    import qiskit
+    import qiskit_ibm_runtime
+
+    status = backend.status()
+    props = None
+    try:
+        props = backend.properties()
+    except Exception:                                      # pragma: no cover - backend dependent
+        pass
+    last_update = getattr(props, "last_update_date", None)
+    return {
+        "backend": backend.name,
+        "num_qubits": backend.num_qubits,
+        "operational": bool(status.operational),
+        "status_msg": status.status_msg,
+        "submitted_at_utc": datetime.now(timezone.utc).isoformat(),
+        "calibration_last_update": (
+            last_update.isoformat() if hasattr(last_update, "isoformat") else None
+        ),
+        "qiskit_version": qiskit.__version__,
+        "qiskit_ibm_runtime_version": qiskit_ibm_runtime.__version__,
+        "numpy_version": np.__version__,
+        "python_version": platform.python_version(),
+        "shots": SHOTS,
+        "transpile_seed": TRANSPILE_SEED,
+    }
 
 
 # --------------------------------------------------------------------------
@@ -82,8 +113,9 @@ def run_sampler(isa_circuits, backend, shots=SHOTS):
     return job.result()
 
 
-def submit_sampler(isa_circuits, backend, shots=SHOTS, max_per_job=None, mitigation=False):
-    """Submit transpiled circuits through SamplerV2 WITHOUT blocking, chunking to
+def submit_sampler(isa_circuits, backend, shots=SHOTS, max_per_job=None,
+                   mitigation=False, batch_max_time="24h"):
+    """Submit transpiled circuits through a Runtime Batch WITHOUT blocking, chunking to
     respect the backend's per-job circuit limit.  Real-device queues run far
     longer than an interactive call can wait, so submission and retrieval are
     split: this returns (job_ids, chunk_sizes); fetch the results later with
@@ -94,23 +126,26 @@ def submit_sampler(isa_circuits, backend, shots=SHOTS, max_per_job=None, mitigat
     circuits: dynamical decoupling (XY4) against idle decoherence plus gate and
     measurement Pauli twirling to convert coherent/readout bias into stochastic
     noise -- the levers that de-bias the deep-circuit Fisher geometry."""
-    from qiskit_ibm_runtime import SamplerV2
+    from qiskit_ibm_runtime import Batch, SamplerV2
     if max_per_job is None:
         max_per_job = getattr(backend, "max_circuits", None) or 300
-    sampler = SamplerV2(mode=backend)
-    if mitigation:
-        sampler.options.dynamical_decoupling.enable = True
-        sampler.options.dynamical_decoupling.sequence_type = "XY4"
-        sampler.options.twirling.enable_gates = True
-        sampler.options.twirling.enable_measure = True
-        print("  [mitigation] DD=XY4, gate+measurement twirling enabled")
     job_ids, chunks = [], []
-    for start in range(0, len(isa_circuits), max_per_job):
-        chunk = isa_circuits[start:start + max_per_job]
-        job = sampler.run(chunk, shots=shots)
-        job_ids.append(job.job_id()); chunks.append(len(chunk))
-        print(f"  chunk [{start}:{start + len(chunk)}] -> job {job.job_id()}")
-    return job_ids, chunks
+    with Batch(backend=backend, max_time=batch_max_time) as batch:
+        batch_id = batch.session_id
+        sampler = SamplerV2(mode=batch)
+        if mitigation:
+            sampler.options.dynamical_decoupling.enable = True
+            sampler.options.dynamical_decoupling.sequence_type = "XY4"
+            sampler.options.twirling.enable_gates = True
+            sampler.options.twirling.enable_measure = True
+            print("  [mitigation] DD=XY4, gate+measurement twirling enabled")
+        print(f"  Runtime Batch: {batch_id}")
+        for start in range(0, len(isa_circuits), max_per_job):
+            chunk = isa_circuits[start:start + max_per_job]
+            job = sampler.run(chunk, shots=shots)
+            job_ids.append(job.job_id()); chunks.append(len(chunk))
+            print(f"  chunk [{start}:{start + len(chunk)}] -> job {job.job_id()}")
+    return batch_id, job_ids, chunks
 
 
 def submit_estimator_zne(pubs, backend, shots=SHOTS, max_per_job=None,
@@ -166,16 +201,18 @@ def get_counts(result, i, creg="meas"):
 # --------------------------------------------------------------------------
 # Counts post-processing
 # --------------------------------------------------------------------------
-def counts_to_probs(counts, dim, shots=SHOTS):
+def counts_to_probs(counts, dim, shots=None):
     p = np.zeros(dim)
     for bitstring, c in counts.items():
         p[int(bitstring.replace(" ", ""), 2)] = c
+    shots = shots or sum(counts.values())
     return p / max(shots, 1)
 
 
-def counts_to_parity(counts, shots=SHOTS):
+def counts_to_parity(counts, shots=None):
     """<Z^{otimes a}> from counts: +1 for even Hamming weight, -1 for odd."""
     val = 0.0
     for bitstring, c in counts.items():
         val += ((-1) ** bitstring.replace(" ", "").count("1")) * c
+    shots = shots or sum(counts.values())
     return val / max(shots, 1)

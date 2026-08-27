@@ -1,91 +1,158 @@
 {
-  "backend": "ibm_kobe",
+  "backend": "ibm_kawasaki",
   "shots": 4096,
+  "batch_id": "4a43e6ab-b49c-4427-9339-0c53ed2fda46",
+  "job_ids": [
+    "d9jgoi0ii2cc73eeqbsg",
+    "d9jgoijjf64c739gpt7g",
+    "d9jgojgii2cc73eeqbvg",
+    "d9jgokjhdfks73ci907g",
+    "d9jgolbhdfks73ci90a0",
+    "d9jgom3hdfks73ci90b0",
+    "d9jgomrjf64c739gptc0",
+    "d9jgonbhdfks73ci90dg",
+    "d9jgonoii2cc73eeqc50",
+    "d9jgoogii2cc73eeqc70",
+    "d9jgopbhdfks73ci90hg",
+    "d9jgopjjf64c739gpthg",
+    "d9jhqn8ii2cc73eerqk0",
+    "d9jhqo3jf64c739grce0",
+    "d9jhqooii2cc73eerqm0",
+    "d9jhqpbhdfks73ciafvg",
+    "d9k5fgqbr2fc73e6rdh0",
+    "d9k5fhoii2cc73efmllg",
+    "d9k5fiqbr2fc73e6rdl0"
+  ],
+  "submitted_at_utc": "2026-07-27T07:44:39.922580+00:00",
+  "calibration_last_update": "2026-07-27T15:05:32+08:00",
+  "qiskit_version": "2.4.2",
+  "qiskit_ibm_runtime_version": "0.46.1",
   "mitigation": true,
   "method": [
-        {
+    {
       "L": 1,
       "P": 12,
       "twoq": 11,
-      "depth": 41,
-      "eff_rank": 3.3577712264588404,
-      "eff_dim": 4.4249543923173879
+      "eff_rank": 3.94312060084127,
+      "eff_dim": 6.990350855623687
     },
     {
       "L": 2,
       "P": 24,
       "twoq": 25,
-      "eff_rank": 5.9908323225383855,
-      "eff_dim": 16.10910687157978
+      "eff_rank": 5.995055669095525,
+      "eff_dim": 16.105167440955373
     },
     {
       "L": 3,
       "P": 36,
       "twoq": 39,
-      "eff_rank": 9.043496714434491,
-      "eff_dim": 23.75693020778166
+      "eff_rank": 9.319007661512861,
+      "eff_dim": 24.04062946696175
     },
     {
       "L": 4,
       "P": 48,
       "twoq": 53,
-      "eff_rank": 10.081144339622123,
-      "eff_dim": 26.30811600524174,
-      "zne_eff_dim": 26.686554487132646
+      "eff_rank": 10.355362872067486,
+      "eff_dim": 26.650947227450782
     },
     {
       "L": 5,
       "P": 60,
       "twoq": 67,
-      "eff_rank": 10.311384692363207,
-      "eff_dim": 28.01294858346625
+      "eff_rank": 11.794704045329766,
+      "eff_dim": 29.98653424583971
+    },
+    {
+      "L": 6,
+      "P": 72,
+      "twoq": 80,
+      "eff_rank": 12.432040904292647,
+      "eff_dim": 30.284702173579436
     }
   ],
   "pqc": [
     {
       "L": 2,
       "P": 12,
-      "twoq": 18,
-      "depth": 38,
-      "eff_rank": 10.304586803756098,
-      "eff_dim": 11.557928111724394
+      "twoq": 17,
+      "eff_rank": 7.535059935954858,
+      "eff_dim": 11.341482426372997
     },
     {
       "L": 4,
       "P": 20,
       "twoq": 37,
-      "eff_rank": 10.661493813215335,
-      "eff_dim": 17.91373723188603
+      "eff_rank": 9.61826987796318,
+      "eff_dim": 17.36076235839924
     },
     {
       "L": 6,
       "P": 28,
       "twoq": 56,
-      "depth": 129,
-      "eff_rank": 10.477977801322364,
-      "eff_dim": 19.70462365624075
+      "eff_rank": 10.885141206006319,
+      "eff_dim": 20.904421765071568
     },
     {
       "L": 8,
       "P": 36,
-      "twoq": 76,
-      "eff_rank": 10.046808420977747,
-      "eff_dim": 22.801424973732512
+      "twoq": 75,
+      "eff_rank": 11.4167648027071,
+      "eff_dim": 22.434154844795138
     },
     {
       "L": 10,
       "P": 44,
-      "twoq": 95,
-      "depth": 215,
-      "eff_rank": 10.645859864074800,
-      "eff_dim": 23.799871948627770
+      "twoq": 94,
+      "eff_rank": 11.672090926795939,
+      "eff_dim": 24.007280159854727
     },
     {
       "L": 12,
       "P": 52,
-      "twoq": 115,
-      "eff_rank": 11.012521193934546,
-      "eff_dim": 25.19150179107518
+      "twoq": 116,
+      "eff_rank": 11.31447513044891,
+      "eff_dim": 25.298129250474457
+    }
+  ],
+  "batches": [
+    {
+      "batch_id": "4a43e6ab-b49c-4427-9339-0c53ed2fda46",
+      "job_ids": [
+        "d9jgoi0ii2cc73eeqbsg",
+        "d9jgoijjf64c739gpt7g",
+        "d9jgojgii2cc73eeqbvg",
+        "d9jgokjhdfks73ci907g",
+        "d9jgolbhdfks73ci90a0",
+        "d9jgom3hdfks73ci90b0",
+        "d9jgomrjf64c739gptc0",
+        "d9jgonbhdfks73ci90dg",
+        "d9jgonoii2cc73eeqc50",
+        "d9jgoogii2cc73eeqc70",
+        "d9jgopbhdfks73ci90hg",
+        "d9jgopjjf64c739gpthg"
+      ],
+      "submitted_at_utc": "2026-07-27T07:44:39.922580+00:00"
+    },
+    {
+      "batch_id": "eec20838-5b15-4041-8506-fe5a1a70494c",
+      "job_ids": [
+        "d9jhqn8ii2cc73eerqk0",
+        "d9jhqo3jf64c739grce0",
+        "d9jhqooii2cc73eerqm0",
+        "d9jhqpbhdfks73ciafvg"
+      ],
+      "submitted_at_utc": "2026-07-27T08:57:11.139959+00:00"
+    },
+    {
+      "batch_id": "d41228a0-d6eb-4f7f-9427-a2aa5b27ec56",
+      "job_ids": [
+        "d9k5fgqbr2fc73e6rdh0",
+        "d9k5fhoii2cc73efmllg",
+        "d9k5fiqbr2fc73e6rdl0"
+      ],
+      "submitted_at_utc": "2026-07-28T07:18:36.649132+00:00"
     }
   ]
 }

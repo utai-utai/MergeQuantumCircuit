@@ -13,10 +13,11 @@ and compare two 4-qubit ansaetze at matched TWO-QUBIT-GATE budget, sweeping dept
 
 Result: the plain ansatz saturates (effective-dimension ceiling ~25); the method
 keeps climbing (>42).  At matched 2q cost the method wins by +41..77%, confirmed
-on ibm_kobe (eff_dim 23.9 vs 17.2 at ~38 gates).
+on the selected IBM backend.
 
   from src.experiments.exp5_expr import simulate, plot, run_hardware, load
 """
+import gzip
 import os
 import json
 
@@ -38,7 +39,7 @@ RING = [(0, 1), (1, 2), (2, 3), (3, 0)]
 
 D_DATA = 4                                  # input data points (fixed feature map)
 S_THETA_SWEEP = 40                          # parameter samples for the Fisher average
-SWEEP_L = {"method": [1, 2, 3, 4, 5], "pqc": [2, 4, 6, 8, 10, 12]}
+SWEEP_L = {"method": [1, 2, 3, 4, 5, 6], "pqc": [2, 4, 6, 8, 10, 12]}
 N_DATA_EFFDIM = 1e5                         # data size in the effective-dimension formula
 
 # Hardware sweep operating points: trace BOTH ansaetze across depth ON THE DEVICE
@@ -47,15 +48,20 @@ N_DATA_EFFDIM = 1e5                         # data size in the effective-dimensi
 # method L=4 (~53 2q, sim eff_dim 34.8) sits well above the ~25 PQC ceiling, so it
 # clears the ceiling even after the device noise penalty.  L=3 (method) / L=4 (pqc)
 # remain the matched-resource pair, preserving the apples-to-apples +39% claim.
-HW_SWEEP = {"method": [2, 3, 4], "pqc": [4, 8, 12]}
-HW_EXTRA_SWEEP = {"method": [5]}          # supplementary point: method L=5
+HW_SWEEP = {"method": [2, 3, 4, 5, 6], "pqc": [4, 8, 12]}
+HW_REMAINING_SWEEP = {"method": [1], "pqc": [2, 6, 10]}
+HW_ADDITIONAL_SWEEP = {"method": [6]}
 S_THETA_HW = 3
 D_DATA_HW = 2
 
 _SIM_JSON = "resource_sim.json"
 _HW_JSON = "resource_hw.json"
 _HW_JOBS_JSON = "resource_hw_jobs.json"
-_HW_EXTRA_JOBS_JSON = "resource_hw_extra_jobs.json"
+_RAW_JSON_GZ = "resource_raw_counts.json.gz"
+_HW_REMAINING_JOBS_JSON = "resource_hw_remaining_jobs.json"
+_RAW_REMAINING_JSON_GZ = "resource_raw_counts_remaining.json.gz"
+_HW_ADDITIONAL_JOBS_JSON = "resource_hw_additional_jobs.json"
+_RAW_ADDITIONAL_JSON_GZ = "resource_raw_counts_additional.json.gz"
 _FIG_STEM = "exp5_effdim"
 
 
@@ -149,11 +155,31 @@ def simulate():
     return res
 
 
+def refresh_sim_resources():
+    """Refresh Kawasaki-dependent 2q/depth values without recomputing ideal Fishers."""
+    with open(os.path.join(_EXPDIR, _SIM_JSON), encoding="utf-8") as file:
+        result = json.load(file)
+    passmanager, tag = hardware.make_passmanager()
+    X = make_data(D_DATA)
+    for kind in ("method", "pqc"):
+        for record in result[kind]:
+            twoq, depth = _twoq_depth(
+                passmanager, kind, record["L"], X, np.random.default_rng(123)
+            )
+            record["twoq"] = twoq
+            record["depth"] = depth
+    result["backend"] = tag
+    with open(os.path.join(_EXPDIR, _SIM_JSON), "w", encoding="utf-8") as file:
+        json.dump(result, file, indent=2)
+    print(f"refreshed simulation resource counts for {tag}")
+    return result
+
+
 # --------------------------------------------------------------------------
 # Figure
 # --------------------------------------------------------------------------
 def plot(res=None, hw=None, save_pdf=False):
-    """Plot effective dimension vs two-qubit gate count (simulation + ibm_kobe)."""
+    """Plot effective dimension vs two-qubit gate count."""
     import matplotlib.lines as mlines
     if res is None:
         res, hw = load()
@@ -179,6 +205,7 @@ def plot(res=None, hw=None, save_pdf=False):
 
     # ---- IBM hardware (dashed + star, colors match sim) ----
     if hw is not None:
+        backend_label = hw.get("backend", BACKEND_NAME).replace("_", r"\_")
         for kind, c in (("method", C_M), ("pqc", C_P)):
             pts = hw[kind] if isinstance(hw[kind], list) else [hw[kind]]
             tq = [r["twoq"] for r in pts]
@@ -188,10 +215,11 @@ def plot(res=None, hw=None, save_pdf=False):
         hw_handle = mlines.Line2D(
             [], [], color="0.35", ls="--", lw=1.4,
             marker="*", ms=11, mec="k", mew=0.55,
-            label=r"$\mathtt{ibm\_kobe}$ (DD+twirling)",
+            label=rf"$\mathtt{{{backend_label}}}$ (DD+twirling)",
         )
         handles, labels = ax.get_legend_handles_labels()
-        ax.legend(handles + [hw_handle], labels + [r"$\mathtt{ibm\_kobe}$ (DD+twirling)"],
+        ax.legend(handles + [hw_handle],
+                  labels + [rf"$\mathtt{{{backend_label}}}$ (DD+twirling)"],
                   fontsize=9.5, loc="upper left", frameon=True)
     else:
         ax.legend(fontsize=9.5, loc="upper left", frameon=True)
@@ -205,7 +233,7 @@ def plot(res=None, hw=None, save_pdf=False):
 
 
 # --------------------------------------------------------------------------
-# Hardware: matched-2q effective dimension on ibm_kobe
+# Hardware: matched-2q effective dimension on the selected IBM backend
 # --------------------------------------------------------------------------
 def _fisher_from_probs(probs_map, kind, L, s, d_list, P):
     F = np.zeros((P, P))
@@ -220,15 +248,15 @@ def _fisher_from_probs(probs_map, kind, L, s, d_list, P):
     return F / len(d_list)
 
 
-def _hw_specs():
+def _build_hw_specs(sweep, rng_seed):
     """Fisher circuits for the full hardware depth sweep: per (kind, depth L,
     theta-sample, data) the unshifted circuit plus 2P parameter-shifted circuits.
     Deterministic (fixed seed) so the submit and fetch steps reconstruct the same
     circuit ordering without persisting every spec."""
-    rng = np.random.default_rng(SEED + 21)
+    rng = np.random.default_rng(rng_seed)
     X = make_data(D_DATA_HW, seed=SEED + 3)
     specs, circuits = [], []
-    for kind, Ls in HW_SWEEP.items():
+    for kind, Ls in sweep.items():
         for L in Ls:
             P = nparams(kind, L)
             for s in range(S_THETA_HW):
@@ -242,6 +270,10 @@ def _hw_specs():
                             qc = build(kind, X[d], tt, L); qc.measure_all()
                             circuits.append(qc); specs.append((kind, L, s, d, j, sign))
     return specs, circuits
+
+
+def _hw_specs():
+    return _build_hw_specs(HW_SWEEP, SEED + 21)
 
 
 def dryrun():
@@ -260,7 +292,7 @@ def dryrun():
     return specs, isa, twoq
 
 
-def submit_hardware(mitigation=False):
+def submit_hardware(mitigation=True):
     """Transpile the full sweep and submit it to the device WITHOUT blocking.
     Job ids + chunk sizes + transpiled 2q counts are saved so `fetch_hardware`
     can retrieve and reduce the results once the queue clears.  mitigation=True
@@ -270,9 +302,15 @@ def submit_hardware(mitigation=False):
     backend = hardware.get_backend(BACKEND_NAME)
     print(f"submitting {len(isa)} circuits to {backend.name} "
           f"(mitigation={'on' if mitigation else 'off'}) ...")
-    job_ids, chunks = hardware.submit_sampler(isa, backend, shots=SHOTS, mitigation=mitigation)
-    meta = {"backend": backend.name, "shots": SHOTS, "mitigation": mitigation,
+    batch_id, job_ids, chunks = hardware.submit_sampler(
+        isa, backend, shots=SHOTS, mitigation=mitigation
+    )
+    meta = {**hardware.backend_metadata(backend),
+            "experiment": "exp5_expr", "batch_id": batch_id,
+            "mitigation": mitigation,
             "job_ids": job_ids, "chunks": chunks, "n_circuits": len(isa),
+            "sweep": HW_SWEEP, "s_theta_hw": S_THETA_HW,
+            "d_data_hw": D_DATA_HW,
             "twoq": {f"{k}:{L}": v for (k, L), v in twoq.items()}}
     with open(os.path.join(_EXPDIR, _HW_JOBS_JSON), "w") as f:
         json.dump(meta, f, indent=2)
@@ -289,14 +327,20 @@ def fetch_hardware():
     assert len(specs) == meta["n_circuits"], "spec/circuit count drift -- did the sweep config change?"
     service = hardware.get_service()
     results = hardware.fetch_results(service, meta["job_ids"])
-    probs_map, gi = {}, 0                                   # flatten chunks back to submit order
+    probs_map, raw_counts, gi = {}, [], 0
     for res, n in zip(results, meta["chunks"]):
         for li in range(n):
-            probs_map[specs[gi]] = hardware.counts_to_probs(
-                hardware.get_counts(res, li), DIM, SHOTS)
+            counts = hardware.get_counts(res, li)
+            raw_counts.append(counts)
+            probs_map[specs[gi]] = hardware.counts_to_probs(counts, DIM)
             gi += 1
     twoq = {(k.split(":")[0], int(k.split(":")[1])): v for k, v in meta["twoq"].items()}
     hw = {"backend": meta["backend"], "shots": meta["shots"],
+          "batch_id": meta["batch_id"], "job_ids": meta["job_ids"],
+          "submitted_at_utc": meta["submitted_at_utc"],
+          "calibration_last_update": meta["calibration_last_update"],
+          "qiskit_version": meta["qiskit_version"],
+          "qiskit_ibm_runtime_version": meta["qiskit_ibm_runtime_version"],
           "mitigation": meta.get("mitigation", False), "method": [], "pqc": []}
     for kind, Ls in HW_SWEEP.items():
         for L in Ls:
@@ -311,107 +355,225 @@ def fetch_hardware():
                   f"eff_rank={rec['eff_rank']:.2f}  eff_dim={rec['eff_dim']:.2f}")
     with open(os.path.join(_EXPDIR, _HW_JSON), "w") as f:
         json.dump(hw, f, indent=2)
+    with gzip.open(os.path.join(_EXPDIR, _RAW_JSON_GZ), "wt", encoding="utf-8") as file:
+        json.dump({"job_ids": meta["job_ids"], "counts": raw_counts}, file)
     print(f"saved -> result/exp5_expr/{_HW_JSON}")
+    print(f"saved compressed raw counts -> result/exp5_expr/{_RAW_JSON_GZ}")
     return hw
 
 
-def run_hardware(mitigation=False):
+def run_hardware(mitigation=True):
     """Convenience for notebook use: submit then block until the jobs finish.
     For interactive/long queues prefer submit_hardware() + fetch_hardware()."""
     submit_hardware(mitigation=mitigation)
     return fetch_hardware()
 
 
-# --------------------------------------------------------------------------
-# Supplementary hardware point(s) (default: method L=5) -- appended to the
-# existing resource_hw.json without re-running the full sweep.
-# Uses an independent RNG seed (SEED+31) so thetas are fresh.
-# --------------------------------------------------------------------------
-def _hw_extra_specs(sweep=None):
-    sweep = sweep or HW_EXTRA_SWEEP
-    rng = np.random.default_rng(SEED + 31)
-    X = make_data(D_DATA_HW, seed=SEED + 3)
-    specs, circuits = [], []
-    for kind, Ls in sweep.items():
-        for L in Ls:
-            P = nparams(kind, L)
-            for s in range(S_THETA_HW):
-                theta = rng.uniform(0, 2 * np.pi, P)
-                for d in range(D_DATA_HW):
-                    qc = build(kind, X[d], theta, L); qc.measure_all()
-                    circuits.append(qc); specs.append((kind, L, s, d, -1, 0))
-                    for j in range(P):
-                        for sign in (+1, -1):
-                            tt = theta.copy(); tt[j] += sign * np.pi / 2
-                            qc = build(kind, X[d], tt, L); qc.measure_all()
-                            circuits.append(qc); specs.append((kind, L, s, d, j, sign))
-    return specs, circuits
+def _remaining_hw_specs():
+    return _build_hw_specs(HW_REMAINING_SWEEP, SEED + 31)
 
 
-def submit_hardware_extra(sweep=None, mitigation=True):
-    """Transpile and submit extra operating points to ibm_kobe (non-blocking).
-    Job ids saved to result/exp5_expr/resource_hw_extra_jobs.json."""
-    sweep = sweep or HW_EXTRA_SWEEP
-    specs, circuits = _hw_extra_specs(sweep)
-    pm, tag = hardware.make_passmanager()
-    isa = [pm.run(c) for c in circuits]
-    twoq_meta = {}
-    for kind, Ls in sweep.items():
-        for L in Ls:
-            idx = [i for i, sp in enumerate(specs) if sp[0] == kind and sp[1] == L]
-            twoq_val = int(np.median([isa[i].num_nonlocal_gates() for i in idx]))
-            twoq_meta[f"{kind}:{L}"] = twoq_val
-            print(f"  {kind} L={L} P={nparams(kind, L):3d} 2q={twoq_val}")
+def dryrun_remaining():
+    specs, circuits = _remaining_hw_specs()
+    passmanager, tag = hardware.make_passmanager()
+    isa = [passmanager.run(circuit) for circuit in circuits]
+    twoq = {}
+    print(f"remaining hardware points ({tag}):")
+    for kind, depths in HW_REMAINING_SWEEP.items():
+        for depth in depths:
+            indices = [
+                i for i, spec in enumerate(specs)
+                if spec[0] == kind and spec[1] == depth
+            ]
+            twoq[(kind, depth)] = int(np.median([
+                isa[i].num_nonlocal_gates() for i in indices
+            ]))
+            print(
+                f"  {kind:6s} L={depth:2d} P={nparams(kind, depth):3d} "
+                f"circuits={len(indices):4d} median 2q={twoq[(kind, depth)]}"
+            )
+    print(
+        f"total remaining circuits={len(circuits)} x {SHOTS} shots "
+        f"= {len(circuits) * SHOTS:,} shots"
+    )
+    return specs, isa, twoq
+
+
+def submit_hardware_remaining(mitigation=True):
+    """Submit the four points omitted from the initial seven-point sweep."""
+    _, isa, twoq = dryrun_remaining()
     backend = hardware.get_backend(BACKEND_NAME)
-    print(f"submitting {len(isa)} circuits to {backend.name} "
-          f"(mitigation={'on' if mitigation else 'off'}) ...")
-    job_ids, chunks = hardware.submit_sampler(isa, backend, shots=SHOTS, mitigation=mitigation)
-    meta = {"backend": backend.name, "shots": SHOTS, "mitigation": mitigation,
-            "job_ids": job_ids, "chunks": chunks, "n_circuits": len(isa),
-            "twoq": twoq_meta}
-    with open(os.path.join(_EXPDIR, _HW_EXTRA_JOBS_JSON), "w") as f:
-        json.dump(meta, f, indent=2)
-    print(f"saved {len(job_ids)} job id(s) -> result/exp5_expr/{_HW_EXTRA_JOBS_JSON}")
+    print(
+        f"submitting {len(isa)} remaining circuits to {backend.name} "
+        f"(mitigation={'on' if mitigation else 'off'}) ..."
+    )
+    batch_id, job_ids, chunks = hardware.submit_sampler(
+        isa, backend, shots=SHOTS, mitigation=mitigation
+    )
+    meta = {
+        **hardware.backend_metadata(backend),
+        "experiment": "exp5_expr_remaining",
+        "batch_id": batch_id,
+        "mitigation": mitigation,
+        "job_ids": job_ids,
+        "chunks": chunks,
+        "n_circuits": len(isa),
+        "sweep": HW_REMAINING_SWEEP,
+        "rng_seed": SEED + 31,
+        "s_theta_hw": S_THETA_HW,
+        "d_data_hw": D_DATA_HW,
+        "twoq": {f"{kind}:{depth}": value
+                 for (kind, depth), value in twoq.items()},
+    }
+    path = os.path.join(_EXPDIR, _HW_REMAINING_JOBS_JSON)
+    with open(path, "w", encoding="utf-8") as file:
+        json.dump(meta, file, indent=2)
+    print(f"saved {len(job_ids)} job id(s) -> {path}")
     return meta
 
 
-def fetch_hardware_extra(sweep=None):
-    """Retrieve the extra job, compute eff_dim, and append/overwrite in
-    result/exp5_expr/resource_hw.json, then replot."""
-    sweep = sweep or HW_EXTRA_SWEEP
-    with open(os.path.join(_EXPDIR, _HW_EXTRA_JOBS_JSON)) as f:
-        meta = json.load(f)
-    specs, _ = _hw_extra_specs(sweep)
-    assert len(specs) == meta["n_circuits"], "spec/circuit count drift"
+def fetch_hardware_remaining():
+    """Fetch and merge the remaining four points into resource_hw.json."""
+    jobs_path = os.path.join(_EXPDIR, _HW_REMAINING_JOBS_JSON)
+    with open(jobs_path, encoding="utf-8") as file:
+        meta = json.load(file)
+    specs, _ = _remaining_hw_specs()
+    assert len(specs) == meta["n_circuits"], "remaining spec/circuit count drift"
     service = hardware.get_service()
     results = hardware.fetch_results(service, meta["job_ids"])
-    probs_map, gi = {}, 0
-    for res, n in zip(results, meta["chunks"]):
-        for li in range(n):
-            probs_map[specs[gi]] = hardware.counts_to_probs(
-                hardware.get_counts(res, li), DIM, SHOTS)
-            gi += 1
-    twoq = {(k.split(":")[0], int(k.split(":")[1])): v
-            for k, v in meta["twoq"].items()}
+    probs_map, raw_counts, global_index = {}, [], 0
+    for result, chunk_size in zip(results, meta["chunks"]):
+        for local_index in range(chunk_size):
+            counts = hardware.get_counts(result, local_index)
+            raw_counts.append(counts)
+            probs_map[specs[global_index]] = hardware.counts_to_probs(counts, DIM)
+            global_index += 1
+    assert global_index == meta["n_circuits"]
+
+    twoq = {
+        (key.split(":")[0], int(key.split(":")[1])): value
+        for key, value in meta["twoq"].items()
+    }
     hw_path = os.path.join(_EXPDIR, _HW_JSON)
-    hw = json.load(open(hw_path))
-    for kind, Ls in sweep.items():
-        for L in Ls:
-            P = nparams(kind, L)
-            Fs = [_fisher_from_probs(probs_map, kind, L, s, list(range(D_DATA_HW)), P)
-                  for s in range(S_THETA_HW)]
-            rec = {"L": L, "P": P, "twoq": twoq[(kind, L)],
-                   "eff_rank": float(np.mean([effective_rank(F) for F in Fs])),
-                   "eff_dim": float(effective_dimension(Fs, N_DATA_EFFDIM))}
-            print(f"[{meta['backend']}] {kind} L={L} P={P} 2q={rec['twoq']} "
-                  f"eff_rank={rec['eff_rank']:.2f}  eff_dim={rec['eff_dim']:.2f}")
-            existing = [r for r in hw.get(kind, []) if r["L"] != L]
-            hw[kind] = sorted(existing + [rec], key=lambda r: r["L"])
-    with open(hw_path, "w") as f:
-        json.dump(hw, f, indent=2)
-    print(f"appended -> result/exp5_expr/{_HW_JSON}")
-    plot(*load())
+    with open(hw_path, encoding="utf-8") as file:
+        hw = json.load(file)
+    for kind, depths in HW_REMAINING_SWEEP.items():
+        for depth in depths:
+            parameter_count = nparams(kind, depth)
+            fishers = [
+                _fisher_from_probs(
+                    probs_map, kind, depth, sample,
+                    list(range(D_DATA_HW)), parameter_count
+                )
+                for sample in range(S_THETA_HW)
+            ]
+            record = {
+                "L": depth,
+                "P": parameter_count,
+                "twoq": twoq[(kind, depth)],
+                "eff_rank": float(np.mean([
+                    effective_rank(fisher_matrix) for fisher_matrix in fishers
+                ])),
+                "eff_dim": float(effective_dimension(fishers, N_DATA_EFFDIM)),
+            }
+            existing = [item for item in hw[kind] if item["L"] != depth]
+            hw[kind] = sorted(existing + [record], key=lambda item: item["L"])
+            print(
+                f"[{meta['backend']}] {kind:6s} L={depth:2d} "
+                f"P={parameter_count:3d} 2q={record['twoq']:3d} "
+                f"eff_rank={record['eff_rank']:.2f} "
+                f"eff_dim={record['eff_dim']:.2f}"
+            )
+    hw.setdefault("batches", [{
+        "batch_id": hw.get("batch_id"),
+        "job_ids": list(hw.get("job_ids", [])),
+        "submitted_at_utc": hw.get("submitted_at_utc"),
+    }])
+    hw["batches"].append({
+        "batch_id": meta["batch_id"],
+        "job_ids": meta["job_ids"],
+        "submitted_at_utc": meta["submitted_at_utc"],
+    })
+    hw["job_ids"] = hw.get("job_ids", []) + meta["job_ids"]
+    with open(hw_path, "w", encoding="utf-8") as file:
+        json.dump(hw, file, indent=2)
+    raw_path = os.path.join(_EXPDIR, _RAW_REMAINING_JSON_GZ)
+    with gzip.open(raw_path, "wt", encoding="utf-8") as file:
+        json.dump({"job_ids": meta["job_ids"], "counts": raw_counts}, file)
+    print(f"merged remaining points -> {hw_path}")
+    print(f"saved compressed remaining raw counts -> {raw_path}")
     return hw
+
+
+def submit_hardware_additional(mitigation=True):
+    """Submit only the newly added method L=6 operating point."""
+    specs, circuits = _build_hw_specs(HW_ADDITIONAL_SWEEP, SEED + 41)
+    passmanager, tag = hardware.make_passmanager()
+    isa = [passmanager.run(circuit) for circuit in circuits]
+    twoq = int(np.median([circuit.num_nonlocal_gates() for circuit in isa]))
+    backend = hardware.get_backend(BACKEND_NAME)
+    print(f"submitting {len(isa)} additional circuits to {backend.name} "
+          f"(method L=6, median 2q={twoq}, mitigation={'on' if mitigation else 'off'})")
+    batch_id, job_ids, chunks = hardware.submit_sampler(
+        isa, backend, shots=SHOTS, mitigation=mitigation
+    )
+    meta = {
+        **hardware.backend_metadata(backend), "experiment": "exp5_expr_additional",
+        "batch_id": batch_id, "job_ids": job_ids, "chunks": chunks,
+        "n_circuits": len(isa), "mitigation": mitigation,
+        "sweep": HW_ADDITIONAL_SWEEP, "rng_seed": SEED + 41,
+        "twoq": {"method:6": twoq},
+    }
+    with open(os.path.join(_EXPDIR, _HW_ADDITIONAL_JOBS_JSON), "w", encoding="utf-8") as file:
+        json.dump(meta, file, indent=2)
+    return meta
+
+
+def fetch_hardware_additional():
+    """Fetch and merge only the newly added method L=6 point."""
+    with open(os.path.join(_EXPDIR, _HW_ADDITIONAL_JOBS_JSON), encoding="utf-8") as file:
+        meta = json.load(file)
+    specs, _ = _build_hw_specs(HW_ADDITIONAL_SWEEP, meta["rng_seed"])
+    service = hardware.get_service()
+    results = hardware.fetch_results(service, meta["job_ids"])
+    probs_map, raw_counts, index = {}, [], 0
+    for result, chunk_size in zip(results, meta["chunks"]):
+        for local_index in range(chunk_size):
+            counts = hardware.get_counts(result, local_index)
+            raw_counts.append(counts)
+            probs_map[specs[index]] = hardware.counts_to_probs(counts, DIM)
+            index += 1
+    assert index == meta["n_circuits"]
+    parameter_count = nparams("method", 6)
+    fishers = [_fisher_from_probs(probs_map, "method", 6, sample,
+                                  list(range(D_DATA_HW)), parameter_count)
+               for sample in range(S_THETA_HW)]
+    record = {
+        "L": 6, "P": parameter_count, "twoq": meta["twoq"]["method:6"],
+        "eff_rank": float(np.mean([effective_rank(fisher) for fisher in fishers])),
+        "eff_dim": float(effective_dimension(fishers, N_DATA_EFFDIM)),
+    }
+    hw_path = os.path.join(_EXPDIR, _HW_JSON)
+    with open(hw_path, encoding="utf-8") as file:
+        hw = json.load(file)
+    assert hw["backend"] == meta["backend"], "cannot merge different backends"
+    hw["method"] = sorted([item for item in hw["method"] if item["L"] != 6] + [record],
+                          key=lambda item: item["L"])
+    hw.setdefault("batches", [{
+        "batch_id": hw.get("batch_id"), "job_ids": list(hw.get("job_ids", [])),
+        "submitted_at_utc": hw.get("submitted_at_utc"),
+    }])
+    hw["batches"].append({
+        "batch_id": meta["batch_id"], "job_ids": meta["job_ids"],
+        "submitted_at_utc": meta["submitted_at_utc"],
+    })
+    hw["job_ids"] += meta["job_ids"]
+    with open(hw_path, "w", encoding="utf-8") as file:
+        json.dump(hw, file, indent=2)
+    with gzip.open(os.path.join(_EXPDIR, _RAW_ADDITIONAL_JSON_GZ), "wt", encoding="utf-8") as file:
+        json.dump({"job_ids": meta["job_ids"], "counts": raw_counts}, file)
+    plot(*load(), save_pdf=True)
+    return record
 
 
 def load():

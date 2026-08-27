@@ -14,6 +14,7 @@ global Z^{otimes n} would incur on the idle qubits.
 
   from src.experiments.exp4_bp import simulate, run_hardware, plot, load
 """
+import gzip
 import os
 import json
 
@@ -21,7 +22,7 @@ import numpy as np
 from qiskit import QuantumCircuit
 from qiskit.quantum_info import Statevector
 
-from src import RESULT_DIR, SHOTS, BACKEND_NAME
+from src import RESULT_DIR, SEED, SHOTS, BACKEND_NAME
 from src.core import hardware
 from src.analysis import plotting
 from src.analysis.metrics import parity_op
@@ -35,13 +36,19 @@ GLOBAL_LAYERS = 4
 SUB_LAYERS = 2
 N_LIST_SIM = [2, 4, 6, 8, 10, 12, 14, 16, 18, 20]            # exact statevector (global)
 N_LIST_SUB_SIM = [2, 4, 6, 8, 10, 12, 14, 16, 18, 20, 40, 80, 128]
-N_LIST_HW = [16, 32, 64, 96, 128]
+N_LIST_HW = [2, 4, 8, 16, 24, 32, 48, 64, 96, 128, 156]
+N_LIST_HW_ADDITIONAL = [2, 4, 8, 24, 48, 156]
 S_SIM = 80                   # random inits for simulation variance
 S_HW = 20                    # random inits per (n, kind) for hardware variance
-RNG = np.random.default_rng(0)
+SIM_SEED = SEED
+HW_SEED = SEED
 
 _SIM_JSON = "sim.json"
 _HW_JSON = "hw.json"
+_HW_JOBS_JSON = "hw_jobs.json"
+_RAW_JSON_GZ = "raw_counts.json.gz"
+_HW_ADDITIONAL_JOBS_JSON = "hw_additional_jobs.json"
+_RAW_ADDITIONAL_JSON_GZ = "raw_counts_additional.json.gz"
 _FIG_STEM = "exp4_gradient_variance"
 
 
@@ -99,21 +106,25 @@ def grad0_sim(kind, n, params, op):
     return 0.5 * (cost_sim(kind, n, pp, op) - cost_sim(kind, n, pm, op))
 
 
-def _var_sim(kind, n):
+def _var_sim(kind, n, rng):
     op = parity_op(active_count(kind, n))
     npar = n_params(kind, n)
-    grads = [grad0_sim(kind, n, RNG.uniform(0, 2 * np.pi, npar), op) for _ in range(S_SIM)]
+    grads = [
+        grad0_sim(kind, n, rng.uniform(0, 2 * np.pi, npar), op)
+        for _ in range(S_SIM)
+    ]
     return float(np.var(grads))
 
 
 def simulate():
+    rng = np.random.default_rng(SIM_SEED)
     out = {"n_global": N_LIST_SIM, "n_subspace": N_LIST_SUB_SIM,
            "global_var": [], "subspace_var": []}
     for n in N_LIST_SIM:
-        out["global_var"].append(_var_sim("global", n))
+        out["global_var"].append(_var_sim("global", n, rng))
         print(f"[sim] n={n:3d} global   Var={out['global_var'][-1]:.3e}")
     for n in N_LIST_SUB_SIM:
-        out["subspace_var"].append(_var_sim("subspace", n))
+        out["subspace_var"].append(_var_sim("subspace", n, rng))
         print(f"[sim] n={n:3d} subspace Var={out['subspace_var'][-1]:.3e}")
     with open(os.path.join(_EXPDIR, _SIM_JSON), "w") as f:
         json.dump(out, f, indent=2)
@@ -132,13 +143,14 @@ def make_hw(kind, n, params):
     return meas
 
 
-def _build_specs():
+def _build_specs(n_list=N_LIST_HW, seed=HW_SEED):
+    rng = np.random.default_rng(seed)
     specs, circuits = [], []
-    for n in N_LIST_HW:
+    for n in n_list:
         for kind in ("global", "subspace"):
             npar = n_params(kind, n)
             for s in range(S_HW):
-                params = RNG.uniform(0, 2 * np.pi, npar)
+                params = rng.uniform(0, 2 * np.pi, npar)
                 for sign in (+1, -1):
                     pp = params.copy(); pp[0] += sign * np.pi / 2
                     circuits.append(make_hw(kind, n, pp))
@@ -146,9 +158,9 @@ def _build_specs():
     return specs, circuits
 
 
-def _gate_table(specs, isa):
+def _gate_table(specs, isa, n_list=N_LIST_HW):
     table = {}
-    for n in N_LIST_HW:
+    for n in n_list:
         for kind in ("global", "subspace"):
             idx = [i for i, sp in enumerate(specs) if sp[0] == n and sp[1] == kind]
             twoq = [isa[i].num_nonlocal_gates() for i in idx]
@@ -170,33 +182,82 @@ def dryrun():
         for kind in ("global", "subspace"):
             t = table[(n, kind)]
             print(f"{n:>4} {kind:>9} {t['twoq']:>9} {t['depth']:>7}")
-    pred = {n: _var_sim("subspace", n) for n in N_LIST_HW}
+    rng = np.random.default_rng(SIM_SEED + 404)
+    pred = {n: _var_sim("subspace", n, rng) for n in N_LIST_HW}
     print("\npredicted subspace Var (exact sim):")
     for n in N_LIST_HW:
         print(f"  n={n:>4}: {pred[n]:.3e}")
     return specs, isa, table
 
 
-def run_hardware():
+def submit_hardware(mitigation=False):
     specs, circuits = _build_specs()
-    pm, _ = hardware.make_passmanager()
+    pm, tag = hardware.make_passmanager()
     backend = hardware.get_backend(BACKEND_NAME)
     print(f"transpiling {len(circuits)} circuits for {backend.name} ...")
     isa = [pm.run(c) for c in circuits]
     table = _gate_table(specs, isa)
-    print(f"submitting {len(isa)} circuits x {SHOTS} shots to {backend.name}")
-    res = hardware.run_sampler(isa, backend, shots=SHOTS)
+    print(
+        f"submitting {len(isa)} circuits x {SHOTS} shots to {backend.name} "
+        f"with Runtime Batch"
+    )
+    batch_id, job_ids, chunks = hardware.submit_sampler(
+        isa, backend, shots=SHOTS, mitigation=mitigation
+    )
+    meta = {
+        **hardware.backend_metadata(backend),
+        "experiment": "exp4_bp",
+        "transpiled_backend": tag,
+        "batch_id": batch_id,
+        "job_ids": job_ids,
+        "chunks": chunks,
+        "n_circuits": len(isa),
+        "mitigation": mitigation,
+        "hw_seed": HW_SEED,
+        "n": N_LIST_HW,
+        "s_hw": S_HW,
+        "specs": [list(spec) for spec in specs],
+        "gate_table": {
+            f"{n}_{kind}": table[(n, kind)]
+            for n in N_LIST_HW for kind in ("global", "subspace")
+        },
+    }
+    path = os.path.join(_EXPDIR, _HW_JOBS_JSON)
+    with open(path, "w", encoding="utf-8") as file:
+        json.dump(meta, file, indent=2)
+    print(f"saved submission metadata -> {path}")
+    return meta
 
-    parity = [hardware.counts_to_parity(hardware.get_counts(res, i, creg="c"), SHOTS)
-              for i in range(len(specs))]
+
+def fetch_hardware():
+    jobs_path = os.path.join(_EXPDIR, _HW_JOBS_JSON)
+    with open(jobs_path, encoding="utf-8") as file:
+        meta = json.load(file)
+    service = hardware.get_service()
+    results = hardware.fetch_results(service, meta["job_ids"])
+    counts = []
+    for result, chunk_size in zip(results, meta["chunks"]):
+        for local_index in range(chunk_size):
+            counts.append(hardware.get_counts(result, local_index, creg="c"))
+    assert len(counts) == meta["n_circuits"]
+
+    specs = [tuple(spec) for spec in meta["specs"]]
+    parity = [hardware.counts_to_parity(raw) for raw in counts]
     grads = {n: {"global": {}, "subspace": {}} for n in N_LIST_HW}
     for (n, kind, s, sign), val in zip(specs, parity):
         grads[n][kind].setdefault(s, {})[sign] = val
 
-    result = {"backend": backend.name, "n": N_LIST_HW, "shots": SHOTS,
+    result = {
+              "backend": meta["backend"], "n": N_LIST_HW, "shots": meta["shots"],
+              "batch_id": meta["batch_id"], "job_ids": meta["job_ids"],
+              "mitigation": meta["mitigation"],
+              "submitted_at_utc": meta["submitted_at_utc"],
+              "calibration_last_update": meta["calibration_last_update"],
+              "qiskit_version": meta["qiskit_version"],
+              "qiskit_ibm_runtime_version": meta["qiskit_ibm_runtime_version"],
+              "hw_seed": meta["hw_seed"],
               "shot_floor_var": 1.0 / SHOTS,
-              "gate_table": {f"{n}_{kind}": table[(n, kind)]
-                             for n in N_LIST_HW for kind in ("global", "subspace")},
+              "gate_table": meta["gate_table"],
               "global_var": [], "subspace_var": [], "detail": {}}
     for n in N_LIST_HW:
         for kind in ("global", "subspace"):
@@ -204,11 +265,120 @@ def run_hardware():
                   for s in grads[n][kind]]
             result["detail"][f"{n}_{kind}"] = gs
             result[f"{kind}_var"].append(float(np.var(gs)))
-        print(f"[{backend.name} n={n:>4}] global Var={result['global_var'][-1]:.3e} | "
+        print(f"[{meta['backend']} n={n:>4}] global Var={result['global_var'][-1]:.3e} | "
               f"subspace Var={result['subspace_var'][-1]:.3e}")
-    with open(os.path.join(_EXPDIR, _HW_JSON), "w") as f:
+    with open(os.path.join(_EXPDIR, _HW_JSON), "w", encoding="utf-8") as f:
         json.dump(result, f, indent=2)
+    with gzip.open(os.path.join(_EXPDIR, _RAW_JSON_GZ), "wt", encoding="utf-8") as file:
+        json.dump({"job_ids": meta["job_ids"], "counts": counts}, file)
     return result
+
+
+def run_hardware(mitigation=False):
+    """Submit via Batch and block until every job is ready."""
+    submit_hardware(mitigation=mitigation)
+    return fetch_hardware()
+
+
+def submit_hardware_additional(mitigation=False):
+    """Submit only hardware sizes absent from the original five-point sweep."""
+    specs, circuits = _build_specs(N_LIST_HW_ADDITIONAL, HW_SEED + 41)
+    pm, tag = hardware.make_passmanager()
+    backend = hardware.get_backend(BACKEND_NAME)
+    print(f"transpiling {len(circuits)} additional circuits for {backend.name} ...")
+    isa = [pm.run(circuit) for circuit in circuits]
+    table = _gate_table(specs, isa, N_LIST_HW_ADDITIONAL)
+    batch_id, job_ids, chunks = hardware.submit_sampler(
+        isa, backend, shots=SHOTS, mitigation=mitigation
+    )
+    meta = {
+        **hardware.backend_metadata(backend),
+        "experiment": "exp4_bp_additional",
+        "batch_id": batch_id,
+        "job_ids": job_ids,
+        "chunks": chunks,
+        "n_circuits": len(isa),
+        "mitigation": mitigation,
+        "hw_seed": HW_SEED + 41,
+        "n": N_LIST_HW_ADDITIONAL,
+        "specs": [list(spec) for spec in specs],
+        "gate_table": {
+            f"{n}_{kind}": table[(n, kind)]
+            for n in N_LIST_HW_ADDITIONAL for kind in ("global", "subspace")
+        },
+    }
+    path = os.path.join(_EXPDIR, _HW_ADDITIONAL_JOBS_JSON)
+    with open(path, "w", encoding="utf-8") as file:
+        json.dump(meta, file, indent=2)
+    print(f"saved additional submission metadata -> {path}")
+    return meta
+
+
+def fetch_hardware_additional():
+    """Fetch and merge the additional sizes without rerunning existing points."""
+    jobs_path = os.path.join(_EXPDIR, _HW_ADDITIONAL_JOBS_JSON)
+    with open(jobs_path, encoding="utf-8") as file:
+        meta = json.load(file)
+    service = hardware.get_service()
+    results = hardware.fetch_results(service, meta["job_ids"])
+    counts = [
+        hardware.get_counts(result, local_index, creg="c")
+        for result, chunk_size in zip(results, meta["chunks"])
+        for local_index in range(chunk_size)
+    ]
+    assert len(counts) == meta["n_circuits"]
+
+    grads = {n: {"global": {}, "subspace": {}} for n in meta["n"]}
+    for (n, kind, sample, sign), value in zip(meta["specs"],
+                                                map(hardware.counts_to_parity, counts)):
+        grads[n][kind].setdefault(sample, {})[sign] = value
+
+    hw_path = os.path.join(_EXPDIR, _HW_JSON)
+    with open(hw_path, encoding="utf-8") as file:
+        hw = json.load(file)
+    assert hw["backend"] == meta["backend"], "cannot merge different backends"
+    records = {}
+    for n in meta["n"]:
+        records[n] = {}
+        for kind in ("global", "subspace"):
+            values = [0.5 * (grads[n][kind][sample][+1] - grads[n][kind][sample][-1])
+                      for sample in grads[n][kind]]
+            records[n][kind] = {"var": float(np.var(values)), "detail": values}
+
+    existing = {
+        n: (hw["global_var"][index], hw["subspace_var"][index],
+            hw["detail"][f"{n}_global"], hw["detail"][f"{n}_subspace"])
+        for index, n in enumerate(hw["n"])
+    }
+    for n, record in records.items():
+        existing[n] = (record["global"]["var"], record["subspace"]["var"],
+                       record["global"]["detail"], record["subspace"]["detail"])
+        hw["gate_table"].update({
+            f"{n}_{kind}": meta["gate_table"][f"{n}_{kind}"]
+            for kind in ("global", "subspace")
+        })
+    hw["n"] = N_LIST_HW
+    hw["global_var"] = [existing[n][0] for n in N_LIST_HW]
+    hw["subspace_var"] = [existing[n][1] for n in N_LIST_HW]
+    hw["detail"] = {
+        f"{n}_{kind}": existing[n][2 if kind == "global" else 3]
+        for n in N_LIST_HW for kind in ("global", "subspace")
+    }
+    hw.setdefault("batches", [{
+        "batch_id": hw.get("batch_id"), "job_ids": list(hw.get("job_ids", [])),
+        "submitted_at_utc": hw.get("submitted_at_utc"),
+    }])
+    hw["batches"].append({
+        "batch_id": meta["batch_id"], "job_ids": meta["job_ids"],
+        "submitted_at_utc": meta["submitted_at_utc"],
+    })
+    hw["job_ids"] += meta["job_ids"]
+    with open(hw_path, "w", encoding="utf-8") as file:
+        json.dump(hw, file, indent=2)
+    with gzip.open(os.path.join(_EXPDIR, _RAW_ADDITIONAL_JSON_GZ), "wt", encoding="utf-8") as file:
+        json.dump({"job_ids": meta["job_ids"], "counts": counts}, file)
+    plot(*load(), save_pdf=True)
+    return hw
 
 
 # --------------------------------------------------------------------------
@@ -255,16 +425,24 @@ def plot(sim=None, hw=None, save_pdf=False):
     ]
 
     if hw is not None:
+        backend_label = hw.get("backend", BACKEND_NAME).replace("_", r"\_")
         hn = np.array(hw["n"], dtype=float)
-        ax.plot(hn, hw["global_var"], "*", ms=17, color=C_GLOBAL,
-                markeredgecolor="k", markeredgewidth=0.7, zorder=6)
-        ax.plot(hn, hw["subspace_var"], "*", ms=17, color=C_SUB,
-                markeredgecolor="k", markeredgewidth=0.7, zorder=6)
+        ax.scatter(hn, hw["global_var"], marker="*", s=410, color=C_GLOBAL,
+                   edgecolors="k", linewidths=0.7, zorder=6)
+        compact = hn <= 4
+        ax.scatter(hn[~compact], np.asarray(hw["subspace_var"])[~compact],
+                   marker="*", s=410, color=C_SUB, edgecolors="k",
+                   linewidths=0.7, zorder=6)
+        # The low-n blue stars sit almost exactly on the red hardware values.
+        # A smaller, translucent marker keeps both exact coordinates readable.
+        ax.scatter(hn[compact], np.asarray(hw["subspace_var"])[compact],
+                   marker="*", s=230, color=C_SUB, alpha=0.68, edgecolors="k",
+                   linewidths=0.7, zorder=7)
         handles += [
             Line2D([], [], color=C_GLOBAL, lw=0, marker="*", ms=15, mec="k",
-                   label=r"global on $\mathtt{ibm\_kobe}$"),
+                   label=rf"global on $\mathtt{{{backend_label}}}$"),
             Line2D([], [], color=C_SUB, lw=0, marker="*", ms=15, mec="k",
-                   label=r"proposed method on $\mathtt{ibm\_kobe}$"),
+                   label=rf"proposed method on $\mathtt{{{backend_label}}}$"),
         ]
 
     ax.annotate(r"trainable: $\mathrm{Var}\sim\Omega(1/k)$",
@@ -273,7 +451,7 @@ def plot(sim=None, hw=None, save_pdf=False):
                 arrowprops=dict(arrowstyle="->", color=C_SUB, lw=1.1,
                                 connectionstyle="arc3,rad=0.2"))
     ax.annotate(r"untrainable: $\mathrm{Var}\sim 2^{-n}$",
-                xy=(14.0, sim["global_var"][6]), xytext=(42.0, 1.1e-5),
+                xy=(16.3, sim["global_var"][7]), xytext=(42.0, 1.1e-5),
                 fontsize=10, color=C_GLOBAL, ha="center", va="center",
                 arrowprops=dict(arrowstyle="->", color=C_GLOBAL, lw=1.1,
                                 connectionstyle="arc3,rad=0.2"))

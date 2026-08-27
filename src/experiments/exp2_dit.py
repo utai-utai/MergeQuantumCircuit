@@ -83,7 +83,7 @@ class TrainableQuantumResLinear(nn.Module):
     """Replace the W-action by O = Q e^{-iH} Q^H with a TRAINABLE Hermitian
     generator H (warm-started from the analytic transfer map)."""
 
-    def __init__(self, classical_layer, k=16):
+    def __init__(self, classical_layer, k=16, gamma=1.0):
         super().__init__()
         self.in_features = classical_layer.in_features
         self.k = min(k, self.in_features)
@@ -91,7 +91,11 @@ class TrainableQuantumResLinear(nn.Module):
         W = classical_layer.weight.data.cpu()
         Q, _, H = transfer_map(W, self.k)              # orthonormal Q, H = i log U_A
         self.register_buffer("Q", Q)
+        self.register_buffer("coupling", torch.tensor(float(gamma)))
         self.H_param = nn.Parameter(H)
+
+    def set_coupling(self, gamma):
+        self.coupling.fill_(float(gamma))
 
     def forward(self, x):
         H = 0.5 * (self.H_param + self.H_param.mH)
@@ -101,7 +105,7 @@ class TrainableQuantumResLinear(nn.Module):
         x_ev = x_sub @ U.transpose(-2, -1)
         x_q = torch.real(x_ev @ self.Q.mH)
         x_q = x_q / (x_q.std(dim=-1, keepdim=True) + 1e-6)
-        return x + 0.1 * self.alpha * x_q
+        return x + self.coupling * self.alpha * x_q
 
 
 # ============================================================================
@@ -180,11 +184,17 @@ class ConditionalMiniDiT(nn.Module):
         x = x.view(B, h, w, p, p).permute(0, 1, 3, 2, 4).reshape(B, 1, self.img_size, self.img_size)
         return x
 
-    def convert_to_quantum(self, k=16):
+    def convert_to_quantum(self, k=16, gamma=1.0):
         for block in self.blocks:
             c_layer = block.mlp[-1]
             if isinstance(c_layer, ClassicalResLinear):
-                block.mlp[-1] = TrainableQuantumResLinear(c_layer, k=k)
+                block.mlp[-1] = TrainableQuantumResLinear(c_layer, k=k, gamma=gamma)
+
+    def set_quantum_coupling(self, gamma):
+        for block in self.blocks:
+            layer = block.mlp[-1]
+            if isinstance(layer, TrainableQuantumResLinear):
+                layer.set_coupling(gamma)
 
 
 # ============================================================================
