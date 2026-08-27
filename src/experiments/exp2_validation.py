@@ -4,7 +4,6 @@ This module intentionally contains only the requested coupling, conditional
 accuracy, and generator-only recovery checks.  It uses three independently
 trained classical checkpoints and pairs every quantum condition within seed.
 """
-import copy
 import csv
 import json
 import os
@@ -15,9 +14,7 @@ import torch.nn.functional as F
 
 from src import RESULT_DIR
 from src.core.data import mnist_loaders
-from src.experiments.exp2_dit import (
-    ConditionalMiniDiT, CosineDDPM, TrainableQuantumResLinear, transfer_map,
-)
+from src.experiments.exp2_dit import ConditionalMiniDiT, CosineDDPM
 
 
 def _device():
@@ -70,6 +67,18 @@ def train_classifier(train_loader, device, output_dir, epochs=5):
         parameter.requires_grad = False
     torch.save(model.state_dict(), path)
     return model
+
+
+@torch.no_grad()
+def classifier_test_accuracy(model, test_loader, device):
+    """Held-out accuracy of the independently trained scoring classifier."""
+    model.eval()
+    correct = total = 0
+    for x, y in test_loader:
+        prediction = model(x.to(device)).argmax(dim=1)
+        correct += (prediction.cpu() == y).sum().item()
+        total += len(y)
+    return correct / total
 
 
 def make_fixed_test_cases(test_loader, timesteps, repeats=4, seed=314159):
@@ -161,12 +170,16 @@ def generator_finetune(model, loader, diffusion, fixed_cases, device, epochs, le
 
 
 @torch.no_grad()
-def conditional_accuracy(model, classifier, diffusion, device, noise_seed, samples_per_digit=50, batch_size=100):
-    """One deterministic sampling stream per independent DiT seed/phase (500 samples)."""
+def conditional_metrics(model, classifier, diffusion, device, noise_seed,
+                        samples_per_digit=50, batch_size=100):
+    """Conditional accuracy and prediction coverage for one generated sample set."""
     model.eval(); classifier.eval()
     torch.manual_seed(noise_seed)
     labels = torch.arange(10, device=device).repeat_interleave(samples_per_digit)
     correct = total = 0
+    correct_by_digit = torch.zeros(10, dtype=torch.long)
+    count_by_digit = torch.zeros(10, dtype=torch.long)
+    predicted_count = torch.zeros(10, dtype=torch.long)
     for start in range(0, len(labels), batch_size):
         y = labels[start:start + batch_size]
         x = torch.randn(len(y), 1, 32, 32, device=device)
@@ -177,7 +190,17 @@ def conditional_accuracy(model, classifier, diffusion, device, noise_seed, sampl
         prediction = classifier(torch.clamp(x, -1, 1)).argmax(dim=1)
         correct += (prediction == y).sum().item()
         total += len(y)
-    return correct / total
+        for digit in range(10):
+            mask = y == digit
+            count_by_digit[digit] += mask.sum().cpu()
+            correct_by_digit[digit] += ((prediction == y) & mask).sum().cpu()
+            predicted_count[digit] += (prediction == digit).sum().cpu()
+    per_digit = (correct_by_digit.float() / count_by_digit.clamp_min(1)).tolist()
+    return {
+        "conditional_accuracy": correct / total,
+        "predicted_class_coverage": (predicted_count > 0).float().mean().item(),
+        "per_digit_accuracy": json.dumps(per_digit),
+    }
 
 
 def _plot_results(zero_rows, conditional_rows, finetune_rows, output_dir):
@@ -243,6 +266,8 @@ def run_validation_abc(seeds=(0, 1, 2), epochs_classical=80, epochs_quantum=20,
     print(f"Validation A--C on {device}: seeds={list(seeds)}, full MNIST test x 4 fixed noise/timestep pairs")
     torch.manual_seed(271828)
     classifier = train_classifier(train_loader, device, output_dir, epochs=classifier_epochs)
+    classifier_accuracy = classifier_test_accuracy(classifier, test_loader, device)
+    print(f"Independent classifier held-out accuracy={classifier_accuracy:.4f}")
 
     zero_rows, conditional_rows, finetune_rows, checkpoints = [], [], [], {}
     for seed in seeds:
@@ -251,14 +276,18 @@ def run_validation_abc(seeds=(0, 1, 2), epochs_classical=80, epochs_quantum=20,
         checkpoints[seed] = checkpoint
         classical = _model().to(device); classical.load_state_dict(torch.load(checkpoint, map_location=device, weights_only=True))
         classical_mse = fixed_denoising_mse(classical, diffusion, fixed_cases, device)
-        conditional_rows.append({"seed": seed, "phase": "classical", "conditional_accuracy": conditional_accuracy(classical, classifier, diffusion, device, 100000 + seed, samples_per_digit=samples_per_digit)})
+        conditional_rows.append({"seed": seed, "phase": "classical",
+                                 **conditional_metrics(classical, classifier, diffusion, device,
+                                                       100000 + seed, samples_per_digit=samples_per_digit)})
         for gamma in (0.0, 0.1, 0.3, 1.0):
             quantum = load_quantum_from_checkpoint(checkpoint, device, gamma, k=k)
             mse = fixed_denoising_mse(quantum, diffusion, fixed_cases, device)
             zero_rows.append({"seed": seed, "gamma": gamma, "mse": mse, "classical_mse": classical_mse})
             if gamma in (0.1, 1.0):
                 conditional_rows.append({"seed": seed, "phase": f"zero_gamma_{gamma:g}",
-                                         "conditional_accuracy": conditional_accuracy(quantum, classifier, diffusion, device, int(200000 + 100 * gamma) + seed, samples_per_digit=samples_per_digit)})
+                                         **conditional_metrics(quantum, classifier, diffusion, device,
+                                                               int(200000 + 100 * gamma) + seed,
+                                                               samples_per_digit=samples_per_digit)})
         print(f"  seed={seed} classical fixed-MSE={classical_mse:.6f}")
 
     gamma1_mean = _mean_std([row["mse"] for row in zero_rows if row["gamma"] == 1.0])[0]
@@ -271,7 +300,8 @@ def run_validation_abc(seeds=(0, 1, 2), epochs_classical=80, epochs_quantum=20,
         for row in curve:
             finetune_rows.append({"seed": seed, **row, "gamma": fine_tune_gamma})
         conditional_rows.append({"seed": seed, "phase": "fine_tuned",
-                                 "conditional_accuracy": conditional_accuracy(quantum, classifier, diffusion, device, 300000 + seed, samples_per_digit=samples_per_digit)})
+                                 **conditional_metrics(quantum, classifier, diffusion, device,
+                                                       300000 + seed, samples_per_digit=samples_per_digit)})
 
     _write_csv(os.path.join(output_dir, "zero_shot_coupling.csv"), zero_rows)
     _write_csv(os.path.join(output_dir, "conditional_accuracy.csv"), conditional_rows)
@@ -282,6 +312,7 @@ def run_validation_abc(seeds=(0, 1, 2), epochs_classical=80, epochs_quantum=20,
                "selected_fine_tune_gamma": fine_tune_gamma,
                "conditional_samples_per_phase_per_seed": 10 * samples_per_digit,
                "classifier": "independently trained frozen MNIST ConvNet",
+               "classifier_held_out_accuracy": classifier_accuracy,
                "conditional_samples_per_digit": samples_per_digit}
     with open(os.path.join(output_dir, "summary.json"), "w") as handle: json.dump(summary, handle, indent=2)
     _plot_results(zero_rows, conditional_rows, finetune_rows, output_dir)
